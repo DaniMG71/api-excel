@@ -4,6 +4,10 @@ const cors = require('cors');
 const sequelize = require('./config/database');
 const getTicketModel = require('./models/DynamicTicket');
 const getTiendaModel = require('./models/DynamicTienda');
+const getActionPlanModel = require('./models/DynamicActionPlan');
+const getMeetingModel = require('./models/DynamicMeeting');
+const getAsistenteModel = require('./models/DynamicAsistentes');
+const getDynamicReunionesAsistentesModel = require('./models/DynamicReunionesAsistentes');
 const ldap = require('ldapjs');
 
 const app = express();
@@ -112,11 +116,38 @@ async function startServer() {
     console.log('✅ Conectado a PostgreSQL');
 
     // Cargar modelos dinámicos al inicio
-    const [Ticket, Tienda] = await Promise.all([
+    const [Ticket, Tienda, PlanAccion, Reunion, Asistente, ReunionAsistente] = await Promise.all([
       getTicketModel(),
       getTiendaModel(),
+      getActionPlanModel(),
+      getMeetingModel(),
+      getAsistenteModel(),
+      getDynamicReunionesAsistentesModel(),
+      
     ]);
     console.log('📦 Modelos cargados correctamente');
+// Relaciones
+Ticket.hasMany(PlanAccion, { foreignKey: "numero_ticket", as: "planes" });
+PlanAccion.belongsTo(Ticket, { foreignKey: "numero_ticket" });
+
+PlanAccion.hasMany(Reunion, { foreignKey: "id_plan_accion", as: "reuniones" });
+Reunion.belongsTo(PlanAccion, { foreignKey: "id_plan_accion" });
+
+// belongsToMany: muchos a muchos entre reuniones y asistentes
+Reunion.belongsToMany(Asistente, {
+  through: "reunionesasistentes",  // nombre exacto de tu tabla intermedia
+  foreignKey: "id_reunion",         // en la tabla intermedia
+  otherKey: "id_asistente",         // en la tabla intermedia
+  as: "asistentes",
+});
+
+Asistente.belongsToMany(Reunion, {
+  through: "reunionesasistentes",
+  foreignKey: "id_asistente",
+  otherKey: "id_reunion",
+  as: "reuniones",
+});
+
 
     // ======================
     // ENDPOINTS DE TICKETS
@@ -296,6 +327,139 @@ async function startServer() {
         res.status(500).json({ success: false, error: 'Error obteniendo columnas' });
       }
     });
+
+    // ======================
+    // ENDPOINT PARA PLAN DE ACCIÓN + REUNIONES
+    // ======================
+
+app.get("/plan-accion", async (req, res) => {
+  try {
+    const tickets = await Ticket.findAll({
+      include: [
+        {
+          model: PlanAccion,
+          as: "planes",
+          include: [
+            {
+              model: Reunion,
+              as: "reuniones",
+              include: [
+                {
+                  model: Asistente,
+                  as: "asistentes",
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+
+    const data = tickets.map(ticket => ({
+      "NUMERO DE TICKET": ticket.numero_ticket,
+      "ESTADO DEL PLAN DE ACCION": ticket.estado_plan_accion || "Pendiente",
+      "TIPO DE TICKET": ticket.tipo_ticket,
+      planes: ticket.planes.map(plan => ({
+        id_plan_accion: plan.id_plan_accion,
+        numero_ticket: plan.numero_ticket,
+        tipo_ticket: plan.tipo_ticket,
+        estado_plan_accion: plan.estado_plan_accion,
+        plan_accion: plan.plan_accion,
+        servicio: plan.servicio,
+        fecha_apertura: plan.fecha_apertura,
+        fecha_cierre: plan.fecha_cierre,
+        encargado: plan.encargado,
+        avance_plan_accion: plan.avance_plan_accion,
+        efectividad: plan.efectividad,
+        reuniones: plan.reuniones.map(reu => ({
+          id_reunion: reu.id_reunion,
+          id_plan_accion: reu.id_plan_accion,
+          titulo: reu.titulo,
+          proposito: reu.proposito,
+          conclusiones: reu.conclusiones,
+          fecha_reunion: reu.fecha_reunion,
+          asistentes: reu.asistentes.map(as => ({
+            id_asistente: as.id_asistente,
+            nombre: as.nombre,
+            cargo: as.cargo,
+            email: as.email,
+          })),
+        })),
+      })),
+    }));
+
+    res.json(data);
+  } catch (error) {
+    console.error("❌ Error al obtener los planes de acción:", error);
+    res.status(500).json({ message: "Error al obtener los planes de acción" });
+  }
+});
+// ======================
+// CREAR PLAN DE ACCIÓN + REUNIONES + ASISTENTES
+// ======================
+app.post("/plan-accion", async (req, res) => {
+  const { numero_ticket, tipo_ticket, plan_accion, estado_plan_accion, reuniones } = req.body;
+
+  const t = await sequelize.transaction(); // 🧠 Transacción para rollback si algo falla
+
+  try {
+    // 1️⃣ Crear el plan de acción
+    const nuevoPlan = await PlanAccion.create(
+      {
+        numero_ticket,
+        tipo_ticket,
+        plan_accion,
+        estado_plan_accion: estado_plan_accion || "Pendiente",
+      },
+      { transaction: t }
+    );
+
+    // 2️⃣ Crear reuniones asociadas (si existen)
+    if (Array.isArray(reuniones) && reuniones.length > 0) {
+      for (const reunionData of reuniones) {
+        const { titulo, proposito, conclusiones, fecha_reunion, asistentes } = reunionData;
+
+        // Crear reunión
+        const nuevaReunion = await Reunion.create(
+          {
+            id_plan_accion: nuevoPlan.id_plan_accion,
+            titulo,
+            proposito,
+            conclusiones,
+            fecha_reunion,
+          },
+          { transaction: t }
+        );
+
+        // 3️⃣ Asociar asistentes (si existen)
+        if (Array.isArray(asistentes) && asistentes.length > 0) {
+          for (const asistenteData of asistentes) {
+            const [asistente] = await Asistente.findOrCreate({
+              where: { email: asistenteData.email },
+              defaults: asistenteData,
+              transaction: t,
+            });
+
+            // Asociar reunión ↔ asistente
+            await nuevaReunion.addAsistente(asistente, { transaction: t });
+          }
+        }
+      }
+    }
+
+    // 4️⃣ Confirmar transacción
+    await t.commit();
+
+    res.status(201).json({
+      message: "✅ Plan de acción creado con reuniones y asistentes",
+      plan: nuevoPlan,
+    });
+  } catch (error) {
+    await t.rollback();
+    console.error("❌ Error al crear plan de acción:", error);
+    res.status(500).json({ message: "Error al crear plan de acción", error: error.message });
+  }
+});
 
     // ======================
     // INICIAR SERVIDOR
