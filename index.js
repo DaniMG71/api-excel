@@ -461,6 +461,98 @@ app.post("/plan-accion", async (req, res) => {
   }
 });
 
+// ======================
+// EDITAR PLAN DE ACCIÓN (Flexible)
+// ======================
+app.put("/plan-accion/:id", async (req, res) => {
+  const { id } = req.params;
+  const { plan_accion, estado_plan_accion, tipo_ticket, reuniones } = req.body;
+
+  const t = await sequelize.transaction(); // 🧠 Transacción
+
+  try {
+    // 1️⃣ Buscar el plan de acción
+    const plan = await PlanAccion.findByPk(id, { transaction: t });
+    if (!plan) {
+      await t.rollback();
+      return res.status(404).json({ message: "Plan de acción no encontrado" });
+    }
+
+    // 2️⃣ Actualizar datos básicos si vienen
+    if (plan_accion || estado_plan_accion || tipo_ticket) {
+      await plan.update(
+        {
+          ...(plan_accion && { plan_accion }),
+          ...(estado_plan_accion && { estado_plan_accion }),
+          ...(tipo_ticket && { tipo_ticket }),
+        },
+        { transaction: t }
+      );
+    }
+
+    // 3️⃣ Si hay reuniones en el body
+    if (Array.isArray(reuniones)) {
+      for (const reunionData of reuniones) {
+        const { id_reunion, titulo, proposito, conclusiones, fecha_reunion, asistentes } = reunionData;
+
+        let reunion;
+
+        if (id_reunion) {
+          // 🔹 Actualizar reunión existente
+          reunion = await Reunion.findByPk(id_reunion, { transaction: t });
+          if (reunion) {
+            await reunion.update(
+              { titulo, proposito, conclusiones, fecha_reunion },
+              { transaction: t }
+            );
+          } else {
+            throw new Error(`Reunión con id ${id_reunion} no encontrada`);
+          }
+        } else {
+          // 🔹 Crear nueva reunión
+          reunion = await Reunion.create(
+            {
+              id_plan_accion: plan.id_plan_accion,
+              titulo,
+              proposito,
+              conclusiones,
+              fecha_reunion,
+            },
+            { transaction: t }
+          );
+        }
+
+        // 4️⃣ Si hay asistentes
+        if (Array.isArray(asistentes)) {
+          for (const asistenteData of asistentes) {
+            const [asistente] = await Asistente.findOrCreate({
+              where: { email: asistenteData.email },
+              defaults: asistenteData,
+              transaction: t,
+            });
+
+            // Asociar reunión ↔ asistente
+            await reunion.addAsistente(asistente, { transaction: t });
+          }
+        }
+      }
+    }
+
+    // 5️⃣ Confirmar cambios
+    await t.commit();
+
+    res.json({ message: "✅ Plan de acción actualizado correctamente" });
+  } catch (error) {
+    await t.rollback();
+    console.error("❌ Error al actualizar plan de acción:", error);
+    res.status(500).json({
+      message: "Error al actualizar plan de acción",
+      error: error.message,
+    });
+  }
+});
+
+
     // ======================
     // INICIAR SERVIDOR
     // ======================
