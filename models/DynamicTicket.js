@@ -5,48 +5,47 @@ const sequelize = require('../config/database');
 async function getTicketModel() {
   // Traer información de las columnas de la tabla
   const [columns] = await sequelize.query(`
-    SELECT COLUMN_NAME, DATA_TYPE
-    FROM INFORMATION_SCHEMA.COLUMNS
-    WHERE TABLE_NAME = 'Tickets'
+    SELECT column_name AS "COLUMN_NAME", data_type AS "DATA_TYPE"
+    FROM information_schema.columns
+    WHERE table_name = 'tickets'
+      AND table_schema = 'public'
   `);
 
   if (!columns.length) throw new Error('No se encontraron columnas en Tickets');
 
   const modelDefinition = {};
-  let primaryKey = null;
 
-  // Mapear tipos de SQL Server a Sequelize
+  // Mapear tipos PostgreSQL a Sequelize
   const sqlToSequelize = {
     bigint: DataTypes.BIGINT,
-    int: DataTypes.INTEGER,
-    varchar: DataTypes.STRING,
-    nvarchar: DataTypes.STRING,
+    integer: DataTypes.INTEGER,
+    "character varying": DataTypes.STRING,
     text: DataTypes.TEXT,
-    date: DataTypes.DATE,
+    date: DataTypes.DATEONLY, // solo fecha
     time: DataTypes.TIME,
-    datetime: DataTypes.DATE,
-    bit: DataTypes.BOOLEAN,
-    decimal: DataTypes.DECIMAL,
-    float: DataTypes.FLOAT,
+    "timestamp without time zone": DataTypes.DATE,
+    "timestamp with time zone": DataTypes.DATE,
+    boolean: DataTypes.BOOLEAN,
+    bit: DataTypes.BOOLEAN, // mapear bit a boolean
+    numeric: DataTypes.DECIMAL,
+    "double precision": DataTypes.FLOAT,
   };
 
   for (const col of columns) {
-    const name = col.COLUMN_NAME;
+    const name = col.COLUMN_NAME.toLowerCase(); // usar minúsculas
     const type = sqlToSequelize[col.DATA_TYPE.toLowerCase()] || DataTypes.STRING;
 
     modelDefinition[name] = { type };
 
-    // Detectar primary key (ejemplo: NUMERO_DE_TICKET)
-    if (name.toUpperCase().includes('NUMERO') && name.toUpperCase().includes('TICKET')) {
-      primaryKey = name;
+    // Detectar primary key por nombre exacto
+    if (name === 'numero_ticket') {
       modelDefinition[name].primaryKey = true;
     }
   }
 
   return sequelize.define('Ticket', modelDefinition, {
-    tableName: 'Tickets',
+    tableName: 'tickets',
     timestamps: false,
-    // Sequelize no agregará columna id automáticamente
     createdAt: false,
     updatedAt: false,
   });
