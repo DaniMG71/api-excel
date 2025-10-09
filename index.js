@@ -280,19 +280,120 @@ app.get('/tickets', async (req, res) => {
   }
 });
 
-    app.put('/tickets/:id', async (req, res) => {
-      try {
-        const { id } = req.params;
-        const data = normalizeTicketData(req.body);
-        const [updated] = await Ticket.update(data, { where: { numero_ticket: id } });
-        if (!updated) return res.status(404).json({ error: 'Ticket no encontrado' });
-        const ticket = await Ticket.findOne({ where: { numero_ticket: id } });
-        res.json(ticket);
-      } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Error actualizando ticket' });
+    // index.js (actualizado) - Solo el endpoint PUT /tickets se modifica; el resto permanece igual
+// ... (código anterior sin cambios hasta app.put('/tickets/:id', ...))
+
+app.put('/tickets/:id', async (req, res) => {
+  const t = await sequelize.transaction();
+  try {
+    const { id } = req.params;
+    let data = normalizeTicketData(req.body);
+    
+    // 🔥 Manejar múltiples tiendas si se envían
+    const codigosTiendas = data.codigosTiendas || [];
+    delete data.codigosTiendas;
+    
+    let syncTiendas = false;
+    if (codigosTiendas.length > 0) {
+      syncTiendas = true;
+      
+      // Obtener detalles de las tiendas
+      const tiendas = await Promise.all(
+        codigosTiendas.map(cod_sap => Tienda.findByPk(cod_sap, { transaction: t }))
+      );
+      
+      // Filtrar tiendas válidas
+      const tiendasValidas = tiendas.filter(tienda => tienda !== null);
+      if (tiendasValidas.length === 0) {
+        throw new Error('Ninguna tienda seleccionada existe en la base de datos');
       }
+      if (tiendasValidas.length !== codigosTiendas.length) {
+        throw new Error('Algunas tiendas no tienen código SAP asignado');
+      }
+      
+      console.log(`   - Actualizando ticket ${id} con ${tiendasValidas.length} tiendas: ${codigosTiendas.join(', ')}`);
+      
+      // Establecer campos primarios desde la primera tienda (para compatibilidad)
+      const primeraTienda = tiendasValidas[0];
+      data.codigo_tienda = primeraTienda.cod_sap;
+      data.tienda = primeraTienda.nombre_pto_operacional;
+      data.unidad_negocio = primeraTienda.uunn;
+      data.bandera = primeraTienda.bandera;
+      data.region = primeraTienda.region;
+      
+      console.log(`   - Primaria actualizada: ${data.codigo_tienda} (${data.tienda})`);
+      
+      // Eliminar asociaciones existentes
+      await TicketTienda.destroy({
+        where: { numero_ticket: id },
+        transaction: t
+      });
+      
+      // Crear nuevas asociaciones
+      for (const tienda of tiendasValidas) {
+        await TicketTienda.create({
+          numero_ticket: id,
+          cod_sap: tienda.cod_sap
+        }, { transaction: t });
+        
+        console.log(`   - Relación actualizada: Ticket ${id} ↔ Tienda ${tienda.cod_sap}`);
+      }
+    } else {
+      console.log(`   - Actualizando ticket ${id} sin cambios en tiendas`);
+    }
+    
+    // Actualizar el ticket principal
+    const [updated] = await Ticket.update(data, {
+      where: { numero_ticket: id },
+      transaction: t
     });
+    
+    if (!updated) {
+      await t.rollback();
+      return res.status(404).json({ error: 'Ticket no encontrado' });
+    }
+    
+    // Commit de la transacción
+    await t.commit();
+    
+    // Fetch el ticket actualizado con tiendas asociadas (similar al GET /tickets)
+    const ticket = await Ticket.findByPk(id);
+    if (!ticket) {
+      return res.status(404).json({ error: 'Ticket no encontrado después de actualización' });
+    }
+    
+    // Obtener relaciones de ticket_tienda
+    const relaciones = await TicketTienda.findAll({ 
+      where: { numero_ticket: id } 
+    });
+    
+    // Obtener cod_saps únicos
+    const codSaps = [...new Set(relaciones.map(r => r.cod_sap))];
+    
+    // Obtener detalles de cada tienda
+    const tiendasAsociadas = await Promise.all(
+      codSaps.map(cod_sap => Tienda.findByPk(cod_sap))
+    );
+    
+    // Filtrar nulls
+    const tiendasValidas = tiendasAsociadas.filter(t => t !== null);
+    
+    // Retornar ticket con tiendas asociadas
+    const ticketCompleto = {
+      ...ticket.dataValues,
+      tiendasAsociadas: tiendasValidas,
+      numTiendas: tiendasValidas.length
+    };
+    
+    console.log(`✅ Ticket ${id} actualizado con éxito`);
+    res.json(ticketCompleto);
+    
+  } catch (error) {
+    await t.rollback();
+    console.error('❌ Error actualizando ticket:', error);
+    res.status(500).json({ error: error.message || 'Error actualizando ticket' });
+  }
+});
 
     app.delete('/tickets/:id', async (req, res) => {
       try {
