@@ -8,6 +8,7 @@ const getActionPlanModel = require('./models/DynamicActionPlan');
 const getMeetingModel = require('./models/DynamicMeeting');
 const getAsistenteModel = require('./models/DynamicAsistentes');
 const getDynamicReunionesAsistentesModel = require('./models/DynamicReunionesAsistentes');
+const TicketTienda = require('./models/TicketTienda');
 const ldap = require('ldapjs');
 
 const app = express();
@@ -148,19 +149,56 @@ Asistente.belongsToMany(Reunion, {
   as: "reuniones",
 });
 
+// Sync tablas (solo para dev - quítalo en prod para evitar alteraciones)
+sequelize.sync({ alter: true }).then(() => console.log('🔄 Tablas sincronizadas'));
+
+
 
     // ======================
-    // ENDPOINTS DE TICKETS
-    // ======================
-    app.get('/tickets', async (req, res) => {
-      try {
-        const tickets = await Ticket.findAll();
-        res.json(tickets);
-      } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Error obteniendo tickets' });
-      }
-    });
+// ENDPOINTS DE TICKETS
+// ======================
+app.get('/tickets', async (req, res) => {
+  try {
+    console.log('🔍 Obteniendo todos los tickets con tiendas asociadas...');
+    
+    // Obtener tickets principales
+    const tickets = await Ticket.findAll();
+    
+    // Para cada ticket, obtener TODAS las tiendas asociadas (primaria + adicionales)
+    const ticketsConTiendas = await Promise.all(tickets.map(async (ticket) => {
+      // 1. Obtener relaciones de ticket_tienda
+      const relaciones = await TicketTienda.findAll({ 
+        where: { numero_ticket: ticket.numero_ticket } 
+      });
+      
+      // 2. Obtener cod_saps únicos
+      const codSaps = [...new Set(relaciones.map(r => r.cod_sap))];  // Evita duplicados
+      
+      console.log(`   - Ticket ${ticket.numero_ticket}: ${codSaps.length} tiendas asociadas (${codSaps.join(', ')})`);
+      
+      // 3. Obtener detalles de cada tienda
+      const tiendasAsociadas = await Promise.all(
+        codSaps.map(cod_sap => Tienda.findByPk(cod_sap))
+      );
+      
+      // Filtrar nulls (si alguna tienda no existe)
+      const tiendasValidas = tiendasAsociadas.filter(t => t !== null);
+      
+      // Agregar al ticket (mantén los campos originales como primaria)
+      return {
+        ...ticket.dataValues,  // Todos los campos del ticket
+        tiendasAsociadas: tiendasValidas,  // Array de todas las tiendas
+        numTiendas: tiendasValidas.length  // Útil para UI
+      };
+    }));
+
+    console.log(`✅ Enviando ${ticketsConTiendas.length} tickets con tiendas asociadas`);
+    res.json(ticketsConTiendas);
+  } catch (error) {
+    console.error('❌ Error obteniendo tickets con tiendas:', error);
+    res.status(500).json({ error: 'Error obteniendo tickets' });
+  }
+});
 
     app.get('/tickets/:id', async (req, res) => {
       try {
@@ -174,15 +212,73 @@ Asistente.belongsToMany(Reunion, {
     });
 
     app.post('/tickets', async (req, res) => {
-      try {
-        const data = normalizeTicketData(req.body);
-        const nuevo = await Ticket.create(data);
-        res.json(nuevo);
-      } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Error creando ticket' });
-      }
+  const t = await sequelize.transaction();  // 🧠 Transacción para rollback si falla
+  try {
+    console.log('📝 Creando nuevo ticket con tiendas...');
+    const data = normalizeTicketData(req.body);
+    
+    // 🔥 OBTENER ARRAY DE TIENDAS DEL BODY (ajusta el nombre si tu frontend envía diferente, ej. 'tiendasSeleccionadas')
+    const codigosTiendas = data.codigosTiendas || [];  // Ej: ["M026", "M028"]
+    if (codigosTiendas.length === 0) {
+      throw new Error('Debe seleccionar al menos una tienda');
+    }
+    
+    console.log(`   - Tiendas seleccionadas: ${codigosTiendas.join(', ')} (${codigosTiendas.length} total)`);
+    
+    // 1️⃣ OBTENER DETALLES DE LAS TIENDAS
+    const tiendas = await Promise.all(
+      codigosTiendas.map(cod_sap => Tienda.findByPk(cod_sap, { transaction: t }))
+    );
+    
+    // Filtrar tiendas inválidas (si alguna no existe)
+    const tiendasValidas = tiendas.filter(tienda => tienda !== null);
+    if (tiendasValidas.length === 0) {
+      throw new Error('Ninguna tienda seleccionada existe en la base de datos');
+    }
+    
+    // 2️⃣ LLENAR CAMPOS PRIMARIOS CON LA PRIMERA TIENDA (para compatibilidad)
+    const primeraTienda = tiendasValidas[0];
+    data.codigo_tienda = primeraTienda.cod_sap;
+    data.tienda = primeraTienda.nombre_pto_operacional;
+    data.unidad_negocio = primeraTienda.uunn;
+    data.bandera = primeraTienda.bandera;
+    data.region = primeraTienda.region;
+    
+    console.log(`   - Primaria: ${data.codigo_tienda} (${data.tienda})`);
+    
+    // 3️⃣ CREAR EL TICKET PRINCIPAL (sin codigo_tienda en el create, ya que lo agregamos arriba)
+    const nuevoTicket = await Ticket.create(data, { transaction: t });
+    
+    // 4️⃣ CREAR RELACIONES EN TICKET_TIENDA PARA TODAS LAS TIENDAS
+    for (const tienda of tiendasValidas) {
+      await TicketTienda.create({
+        numero_ticket: nuevoTicket.numero_ticket,
+        cod_sap: tienda.cod_sap
+      }, { transaction: t });
+      
+      console.log(`   - Relación creada: Ticket ${nuevoTicket.numero_ticket} ↔ Tienda ${tienda.cod_sap}`);
+    }
+    
+    // 5️⃣ Opcional: Limpiar el array del body para no guardarlo en el ticket
+    delete data.codigosTiendas;
+    
+    // 6️⃣ COMMIT Y RESPUESTA
+    await t.commit();
+    
+    // Fetch el ticket completo con tiendas para devolver (usa el GET mejorado si lo tienes)
+    const ticketCompleto = await Ticket.findByPk(nuevoTicket.numero_ticket, {
+      include: []  // Si tienes asociaciones, agrégalas aquí
     });
+    
+    console.log(`✅ Ticket ${nuevoTicket.numero_ticket} creado con ${tiendasValidas.length} tiendas`);
+    res.status(201).json(ticketCompleto);
+    
+  } catch (error) {
+    await t.rollback();
+    console.error('❌ Error creando ticket:', error);
+    res.status(500).json({ error: error.message || 'Error creando ticket' });
+  }
+});
 
     app.put('/tickets/:id', async (req, res) => {
       try {
