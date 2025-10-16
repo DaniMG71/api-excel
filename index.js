@@ -590,33 +590,31 @@ app.get("/plan-accion", async (req, res) => {
     console.error("❌ Error al obtener los planes de acción:", error);
     res.status(500).json({ message: "Error al obtener los planes de acción" });
   }
+  console.log("Datos recibidos:", req.body);
 });
 // ======================
 // CREAR PLAN DE ACCIÓN + REUNIONES + ASISTENTES
 // ======================
 app.post("/plan-accion", async (req, res) => {
-  const { numero_ticket, tipo_ticket, plan_accion, estado_plan_accion, reuniones } = req.body;
+  console.log("📥 Solicitud recibida:", req.body);
 
-  const t = await sequelize.transaction(); // 🧠 Transacción para rollback si algo falla
+  const { reuniones, ...planData } = req.body; // Extrae reuniones, deja el resto como campos del plan
+  const t = await sequelize.transaction();
 
   try {
-    // 1️⃣ Crear el plan de acción
-    const nuevoPlan = await PlanAccion.create(
-      {
-        numero_ticket,
-        tipo_ticket,
-        plan_accion,
-        estado_plan_accion: estado_plan_accion || "Pendiente",
-      },
-      { transaction: t }
-    );
+    // Importa el modelo dinámico
+    const getActionPlanModel = require("./models/DynamicActionPlan");
+    const PlanAccion = await getActionPlanModel();
 
-    // 2️⃣ Crear reuniones asociadas (si existen)
+    // 🧠 Crear plan con todos los campos que existan en el body
+    const nuevoPlan = await PlanAccion.create(planData, { transaction: t });
+
+    // Si vienen reuniones, crearlas igual que antes
     if (Array.isArray(reuniones) && reuniones.length > 0) {
+      const { Reunion, Asistente } = require("./models"); // ajusta según tu estructura real
       for (const reunionData of reuniones) {
         const { titulo, proposito, conclusiones, fecha_reunion, asistentes } = reunionData;
 
-        // Crear reunión
         const nuevaReunion = await Reunion.create(
           {
             id_plan_accion: nuevoPlan.id_plan_accion,
@@ -628,7 +626,6 @@ app.post("/plan-accion", async (req, res) => {
           { transaction: t }
         );
 
-        // 3️⃣ Asociar asistentes (si existen)
         if (Array.isArray(asistentes) && asistentes.length > 0) {
           for (const asistenteData of asistentes) {
             const [asistente] = await Asistente.findOrCreate({
@@ -636,77 +633,60 @@ app.post("/plan-accion", async (req, res) => {
               defaults: asistenteData,
               transaction: t,
             });
-
-            // Asociar reunión ↔ asistente
             await nuevaReunion.addAsistente(asistente, { transaction: t });
           }
         }
       }
     }
 
-    // 4️⃣ Confirmar transacción
     await t.commit();
-
     res.status(201).json({
-      message: "✅ Plan de acción creado con reuniones y asistentes",
+      message: "✅ Plan de acción creado con éxito",
       plan: nuevoPlan,
     });
   } catch (error) {
     await t.rollback();
     console.error("❌ Error al crear plan de acción:", error);
-    res.status(500).json({ message: "Error al crear plan de acción", error: error.message });
+    res.status(500).json({
+      message: "Error al crear plan de acción",
+      error: error.message,
+    });
   }
 });
+
 
 // ======================
 // EDITAR PLAN DE ACCIÓN (Flexible)
 // ======================
 app.put("/plan-accion/:id", async (req, res) => {
   const { id } = req.params;
-  const { plan_accion, estado_plan_accion, tipo_ticket, reuniones } = req.body;
-
-  const t = await sequelize.transaction(); // 🧠 Transacción
+  const { reuniones, ...planData } = req.body; // Extrae todas las propiedades excepto reuniones
+  const t = await sequelize.transaction();
 
   try {
-    // 1️⃣ Buscar el plan de acción
     const plan = await PlanAccion.findByPk(id, { transaction: t });
     if (!plan) {
       await t.rollback();
       return res.status(404).json({ message: "Plan de acción no encontrado" });
     }
 
-    // 2️⃣ Actualizar datos básicos si vienen
-    if (plan_accion || estado_plan_accion || tipo_ticket) {
-      await plan.update(
-        {
-          ...(plan_accion && { plan_accion }),
-          ...(estado_plan_accion && { estado_plan_accion }),
-          ...(tipo_ticket && { tipo_ticket }),
-        },
-        { transaction: t }
-      );
-    }
+    // Actualiza TODOS los campos que hayan llegado en planData
+    await plan.update(planData, { transaction: t });
 
-    // 3️⃣ Si hay reuniones en el body
-    if (Array.isArray(reuniones)) {
+    // Procesa reuniones (crear o actualizar según si tiene id_reunion o no)
+    if (Array.isArray(reuniones) && reuniones.length > 0) {
+      const { Reunion, Asistente } = require("./models");
       for (const reunionData of reuniones) {
         const { id_reunion, titulo, proposito, conclusiones, fecha_reunion, asistentes } = reunionData;
-
         let reunion;
 
         if (id_reunion) {
-          // 🔹 Actualizar reunión existente
           reunion = await Reunion.findByPk(id_reunion, { transaction: t });
-          if (reunion) {
-            await reunion.update(
-              { titulo, proposito, conclusiones, fecha_reunion },
-              { transaction: t }
-            );
-          } else {
+          if (!reunion) {
             throw new Error(`Reunión con id ${id_reunion} no encontrada`);
           }
+          await reunion.update({ titulo, proposito, conclusiones, fecha_reunion }, { transaction: t });
         } else {
-          // 🔹 Crear nueva reunión
           reunion = await Reunion.create(
             {
               id_plan_accion: plan.id_plan_accion,
@@ -719,25 +699,21 @@ app.put("/plan-accion/:id", async (req, res) => {
           );
         }
 
-        // 4️⃣ Si hay asistentes
-        if (Array.isArray(asistentes)) {
+        // Procesa asistentes si hay
+        if (Array.isArray(asistentes) && asistentes.length > 0) {
           for (const asistenteData of asistentes) {
             const [asistente] = await Asistente.findOrCreate({
               where: { email: asistenteData.email },
               defaults: asistenteData,
               transaction: t,
             });
-
-            // Asociar reunión ↔ asistente
             await reunion.addAsistente(asistente, { transaction: t });
           }
         }
       }
     }
 
-    // 5️⃣ Confirmar cambios
     await t.commit();
-
     res.json({ message: "✅ Plan de acción actualizado correctamente" });
   } catch (error) {
     await t.rollback();
@@ -749,6 +725,87 @@ app.put("/plan-accion/:id", async (req, res) => {
   }
 });
 
+app.post("/plan-accion/:planId/reunion", async (req, res) => {
+  const { planId } = req.params;
+  const reunionData = req.body;  // Incluye asistentes
+  const t = await sequelize.transaction();
+
+  console.log("📥 Solicitud a /plan-accion/:planId/reunion:", req.body);  // Log de entrada
+
+  try {
+    const plan = await PlanAccion.findByPk(planId, { transaction: t });
+    if (!plan) {
+      await t.rollback();
+      console.error(`Plan con ID ${planId} no encontrado`);
+      return res.status(404).json({ message: "Plan no encontrado" });
+    }
+
+    const nuevaReunion = await Reunion.create(
+      {
+        id_plan_accion: planId,
+        titulo: reunionData.titulo,
+        proposito: reunionData.proposito,
+        conclusiones: reunionData.conclusiones,
+        fecha_reunion: reunionData.fecha_reunion,
+      },
+      { transaction: t }
+    );
+
+    if (Array.isArray(reunionData.asistentes) && reunionData.asistentes.length > 0) {
+      for (const asistenteData of reunionData.asistentes) {
+        console.log(`Agregando asistente:`, asistenteData);  // Log por asistente
+        const [asistente] = await Asistente.findOrCreate({
+          where: { email: asistenteData.email },
+          defaults: asistenteData,
+          transaction: t,
+        });
+        await nuevaReunion.addAsistente(asistente, { transaction: t });
+      }
+    }
+
+    await t.commit();
+    console.log(`✅ Reunión creada para plan ID ${planId}`);
+    res.status(201).json(nuevaReunion);
+  } catch (error) {
+    await t.rollback();
+    console.error("❌ Error detallado al crear reunión:", error);  // Log detallado
+    res.status(500).json({ message: "Error al crear reunión", error: error.message });
+  }
+});
+
+app.put("/plan-accion/:planId/reunion/:reunionId", async (req, res) => {
+  const { planId, reunionId } = req.params;
+  const reunionData = req.body;
+  const t = await sequelize.transaction();
+
+  try {
+    const reunion = await Reunion.findByPk(reunionId, { transaction: t });
+    if (!reunion || reunion.id_plan_accion !== planId) {
+      await t.rollback();
+      return res.status(404).json({ message: "Reunión no encontrada" });
+    }
+
+    await reunion.update(reunionData, { transaction: t });
+
+    if (Array.isArray(reunionData.asistentes)) {
+      // Maneja asistentes (agrega, pero si necesitas eliminar, añade lógica)
+      for (const asistenteData of reunionData.asistentes) {
+        const [asistente] = await Asistente.findOrCreate({
+          where: { email: asistenteData.email },
+          defaults: asistenteData,
+          transaction: t,
+        });
+        await reunion.addAsistente(asistente, { transaction: t });
+      }
+    }
+
+    await t.commit();
+    res.json(reunion);
+  } catch (error) {
+    await t.rollback();
+    res.status(500).json({ message: "Error al actualizar reunión", error });
+  }
+});
 
     // ======================
     // INICIAR SERVIDOR
