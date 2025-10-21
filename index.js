@@ -598,7 +598,7 @@ app.get("/plan-accion", async (req, res) => {
 app.post("/plan-accion", async (req, res) => {
   console.log("📥 Solicitud recibida:", req.body);
 
-  const { reuniones, ...planData } = req.body; // Extrae reuniones, deja el resto como campos del plan
+  const { reuniones, tipo_ticket, ...planData } = req.body; // Extrae reuniones y tipo_ticket
   const t = await sequelize.transaction();
 
   try {
@@ -607,7 +607,10 @@ app.post("/plan-accion", async (req, res) => {
     const PlanAccion = await getActionPlanModel();
 
     // 🧠 Crear plan con todos los campos que existan en el body
-    const nuevoPlan = await PlanAccion.create(planData, { transaction: t });
+    const nuevoPlan = await PlanAccion.create({
+      ...planData,
+      tipo_ticket, // Asegúrate de guardar el tipo_ticket
+    }, { transaction: t });
 
     // Si vienen reuniones, crearlas igual que antes
     if (Array.isArray(reuniones) && reuniones.length > 0) {
@@ -660,7 +663,7 @@ app.post("/plan-accion", async (req, res) => {
 // ======================
 app.put("/plan-accion/:id", async (req, res) => {
   const { id } = req.params;
-  const { reuniones, ...planData } = req.body; // Extrae todas las propiedades excepto reuniones
+  const { reuniones, tipo_ticket, ...planData } = req.body; // Extrae reuniones y tipo_ticket
   const t = await sequelize.transaction();
 
   try {
@@ -671,7 +674,10 @@ app.put("/plan-accion/:id", async (req, res) => {
     }
 
     // Actualiza TODOS los campos que hayan llegado en planData
-    await plan.update(planData, { transaction: t });
+    await plan.update({
+      ...planData,
+      tipo_ticket, // Asegúrate de actualizar el tipo_ticket
+    }, { transaction: t });
 
     // Procesa reuniones (crear o actualizar según si tiene id_reunion o no)
     if (Array.isArray(reuniones) && reuniones.length > 0) {
@@ -774,21 +780,44 @@ app.post("/plan-accion/:planId/reunion", async (req, res) => {
 });
 
 app.put("/plan-accion/:planId/reunion/:reunionId", async (req, res) => {
-  const { planId, reunionId } = req.params;
+  const planId = parseInt(req.params.planId);  // Convierte a número
+  const reunionId = parseInt(req.params.reunionId);  // Convierte a número
   const reunionData = req.body;
-  const t = await sequelize.transaction();
+  const t = await sequelize.transaction();  // Inicia transacción
+
+  console.log(`[DEBUG] Solicitud PUT recibida para planId: ${planId}, reunionId: ${reunionId}, Body:`, req.body);
 
   try {
-    const reunion = await Reunion.findByPk(reunionId, { transaction: t });
-    if (!reunion || reunion.id_plan_accion !== planId) {
+    const reunion = await Reunion.findByPk(reunionId, { transaction: t });  // Busca la reunión
+    console.log(`[DEBUG] Reunión encontrada en DB:`, reunion);
+
+    if (!reunion) {
+      console.log(`[DEBUG] Reunión con ID ${reunionId} no encontrada en la DB`);
       await t.rollback();
       return res.status(404).json({ message: "Reunión no encontrada" });
     }
 
+    if (reunion.id_plan_accion !== planId) {  // Comparación corregida
+      console.log(`[DEBUG] ID de plan no coincide: Esperado ${planId}, Encontrado ${reunion.id_plan_accion}`);
+      await t.rollback();
+      return res.status(404).json({ message: "Reunión no pertenece a este plan" });
+    }
+
+    // Actualiza los campos de la reunión
     await reunion.update(reunionData, { transaction: t });
 
     if (Array.isArray(reunionData.asistentes)) {
-      // Maneja asistentes (agrega, pero si necesitas eliminar, añade lógica)
+      const actualesAsistentes = await reunion.getAsistentes({ transaction: t });
+      const nuevosAsistentesEmails = reunionData.asistentes.map(a => a.email);
+
+      // Elimina asistentes no presentes
+      for (const asistente of actualesAsistentes) {
+        if (!nuevosAsistentesEmails.includes(asistente.email)) {
+          await reunion.removeAsistente(asistente, { transaction: t });
+        }
+      }
+
+      // Agrega o actualiza asistentes
       for (const asistenteData of reunionData.asistentes) {
         const [asistente] = await Asistente.findOrCreate({
           where: { email: asistenteData.email },
@@ -800,12 +829,14 @@ app.put("/plan-accion/:planId/reunion/:reunionId", async (req, res) => {
     }
 
     await t.commit();
-    res.json(reunion);
+    res.json(reunion);  // Devuelve la reunión actualizada
   } catch (error) {
     await t.rollback();
-    res.status(500).json({ message: "Error al actualizar reunión", error });
+    console.error("❌ Error al actualizar reunión:", error);
+    res.status(500).json({ message: "Error al actualizar reunión", error: error.message });
   }
 });
+
 
     // ======================
     // INICIAR SERVIDOR
