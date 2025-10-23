@@ -35,19 +35,27 @@ function parseFecha(fechaStr) {
 }
 
 // Convertir hora HH:mm:ss (AM/PM) a formato 24h
+// ...existing code...
 function parseHora(horaStr) {
   if (!horaStr) return null;
-  const match = horaStr.match(/^(\d{1,2}):(\d{2}):(\d{2})(?:\s?(AM|PM))?$/i);
+
+  // Acepta "hh:mm", "hh:mm:ss", y con "AM"/"PM"
+  const match = horaStr.match(/^(\d{1,2}):(\d{2})(?::(\d{2}))?(?:\s?(AM|PM))?$/i);
   if (!match) return null;
+
   let [_, hh, mm, ss, ampm] = match;
+  ss = ss || '00';
   hh = parseInt(hh, 10);
+
   if (ampm) {
     if (ampm.toUpperCase() === 'PM' && hh < 12) hh += 12;
     if (ampm.toUpperCase() === 'AM' && hh === 12) hh = 0;
   }
+
   return `${String(hh).padStart(2, '0')}:${mm}:${ss}`;
 }
 
+// ...existing code...
 // Normalizar datos de ticket
 function normalizeTicketData(data) {
   if (data.año !== undefined) {
