@@ -200,6 +200,22 @@ app.get('/tickets', async (req, res) => {
   }
 });
 
+app.get('/tipos-ticket', async (req, res) => {
+     try {
+       const [results] = await sequelize.query(`
+         SELECT DISTINCT tipo_ticket 
+         FROM tickets 
+         WHERE tipo_ticket IS NOT NULL AND tipo_ticket != ''
+         ORDER BY tipo_ticket;
+       `);
+       const tipos = results.map(r => r.tipo_ticket);
+       res.json({ tipos });
+     } catch (err) {
+       console.error('❌ Error obteniendo tipos de ticket:', err);
+       res.status(500).json({ error: 'Error obteniendo tipos de ticket' });
+     }
+   });
+
     app.get('/tickets/:id', async (req, res) => {
       try {
         const ticket = await Ticket.findByPk(req.params.id);
@@ -212,7 +228,7 @@ app.get('/tickets', async (req, res) => {
     });
 
     app.post('/tickets', async (req, res) => {
-  const t = await sequelize.transaction();  // 🧠 Transacción para rollback si falla
+  const t = await sequelize.transaction();  // Transacción para rollback si falla
   try {
     console.log('📝 Creando nuevo ticket con tiendas...');
     const data = normalizeTicketData(req.body);
