@@ -1,22 +1,26 @@
+
 require('dotenv').config();
+const authRoutes = require("./src/routes/auth.routes.js");
+const userRoutes = require("./src/routes/user.routes.js");
 const express = require('express');
 const cors = require('cors');
-const sequelize = require('./config/database');
-const getTicketModel = require('./models/DynamicTicket');
-const getTiendaModel = require('./models/DynamicTienda');
-const getActionPlanModel = require('./models/DynamicActionPlan');
-const getMeetingModel = require('./models/DynamicMeeting');
-const getAsistenteModel = require('./models/DynamicAsistentes');
-const getDynamicReunionesAsistentesModel = require('./models/DynamicReunionesAsistentes');
-const TicketTienda = require('./models/TicketTienda');
+const sequelize = require("./src/config/database.js");
+const getTicketModel = require('./src/models/DynamicTicket');
+const getTiendaModel = require('./src/models/DynamicTienda');
+const getActionPlanModel = require('./src/models/DynamicActionPlan');
+const getMeetingModel = require('./src/models/DynamicMeeting');
+const getAsistenteModel = require('./src/models/DynamicAsistentes');
+const getDynamicReunionesAsistentesModel = require('./src/models/DynamicReunionesAsistentes');
+const TicketTienda = require('./src/models/TicketTienda');
+
 const ldap = require('ldapjs');
 
 const app = express();
 app.use(express.json());
 app.use(cors());
 
-// Configuración LDAP
-const { LDAP_URL, LDAP_BASE_DN, LDAP_DOMAIN } = process.env;
+app.use("/auth", authRoutes)
+app.use("/users", userRoutes)
 
 // ==========================
 // FUNCIONES DE UTILIDAD
@@ -24,15 +28,24 @@ const { LDAP_URL, LDAP_BASE_DN, LDAP_DOMAIN } = process.env;
 
 // Convertir fecha DD/MM/YYYY a YYYY-MM-DD
 function parseFecha(fechaStr) {
-  if (!fechaStr) return null;
-  const partes = fechaStr.split('/');
-  if (partes.length !== 3) return null;
-  const [dd, mm, yyyy] = partes.map(p => parseInt(p, 10));
-  if (isNaN(dd) || isNaN(mm) || isNaN(yyyy)) return null;
+    if (!fechaStr) return null;
+ // Si ya es Date
+  if (fechaStr instanceof Date && !isNaN(fechaStr)) return fechaStr.toISOString().slice(0, 10);
+    const s = String(fechaStr).trim();
+  // YYYY-MM-DD ya válido
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  // Acepta DD/MM/YYYY o DD-MM-YYYY
+  const m = s.match(/^(\d{1,2})[\/\-](\d{1,2})[\/\-](\d{4})$/);
+  if (!m) return null;
+  const dd = parseInt(m[1], 10);
+  const mm = parseInt(m[2], 10);
+  const yyyy = parseInt(m[3], 10);
+  if ([dd, mm, yyyy].some(isNaN)) return null;
   const fechaISO = new Date(yyyy, mm - 1, dd);
   if (isNaN(fechaISO.getTime())) return null;
   return `${fechaISO.getFullYear()}-${String(fechaISO.getMonth() + 1).padStart(2, '0')}-${String(fechaISO.getDate()).padStart(2, '0')}`;
 }
+
 
 // Convertir hora HH:mm:ss (AM/PM) a formato 24h
 // ...existing code...
@@ -158,7 +171,7 @@ Asistente.belongsToMany(Reunion, {
 });
 
 // Sync tablas (solo para dev - quítalo en prod para evitar alteraciones)
-sequelize.sync({ alter: true }).then(() => console.log('🔄 Tablas sincronizadas'));
+//sequelize.sync({ alter: true }).then(() => console.log('🔄 Tablas sincronizadas'));
 
 
 
@@ -627,7 +640,7 @@ app.post("/plan-accion", async (req, res) => {
 
   try {
     // Importa el modelo dinámico
-    const getActionPlanModel = require("./models/DynamicActionPlan");
+    const getActionPlanModel = require("./src/models/DynamicActionPlan");
     const PlanAccion = await getActionPlanModel();
 
     // 🧠 Crear plan con todos los campos que existan en el body
@@ -638,7 +651,7 @@ app.post("/plan-accion", async (req, res) => {
 
     // Si vienen reuniones, crearlas igual que antes
     if (Array.isArray(reuniones) && reuniones.length > 0) {
-      const { Reunion, Asistente } = require("./models"); // ajusta según tu estructura real
+      const { Reunion, Asistente } = require("./src/models"); // ajusta según tu estructura real
       for (const reunionData of reuniones) {
         const { titulo, proposito, conclusiones, fecha_reunion, asistentes } = reunionData;
 
@@ -705,7 +718,7 @@ app.put("/plan-accion/:id", async (req, res) => {
 
     // Procesa reuniones (crear o actualizar según si tiene id_reunion o no)
     if (Array.isArray(reuniones) && reuniones.length > 0) {
-      const { Reunion, Asistente } = require("./models");
+      const { Reunion, Asistente } = require("./src/models");
       for (const reunionData of reuniones) {
         const { id_reunion, titulo, proposito, conclusiones, fecha_reunion, asistentes } = reunionData;
         let reunion;

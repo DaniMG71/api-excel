@@ -1,6 +1,6 @@
 // models/DynamicTienda.js
 const { DataTypes } = require("sequelize");
-const sequelize = require("../config/database");
+const sequelize = require('../config/database');
 
 async function getTiendaModel() {
   // 1️⃣ Obtener columnas desde la tabla

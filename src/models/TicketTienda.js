@@ -1,6 +1,6 @@
 // models/TicketTienda.js
 const { DataTypes } = require("sequelize");
-const sequelize = require("../config/database");
+const sequelize = require('../config/database');
 
 const TicketTienda = sequelize.define("TicketTienda", {
   id: {

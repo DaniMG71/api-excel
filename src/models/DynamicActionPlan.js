@@ -1,6 +1,6 @@
 // models/DynamicActionPlan.js
 const { DataTypes } = require("sequelize");
-const sequelize = require("../config/database");
+const sequelize = require('../config/database');
 
 async function getActionPlanModel() {
     // 1️⃣ Obtener columnas desde la tabla

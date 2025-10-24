@@ -1,5 +1,5 @@
 const { DataTypes } = require("sequelize");
-const sequelize = require("../config/database");
+const sequelize = require('../config/database');
 
 async function getAsistenteModel() {
   const [columns] = await sequelize.query(`
