@@ -605,44 +605,55 @@ app.get("/plan-accion", async (req, res) => {
       ],
     });
 
-    const data = tickets.map(ticket => ({
-      "NUMERO DE TICKET": ticket.numero_ticket,
-      "ESTADO DEL PLAN DE ACCION": ticket.estado_plan_accion || "Pendiente",
-      "TIPO DE TICKET": ticket.tipo_ticket,
-      planes: ticket.planes.map(plan => ({
-        id_plan_accion: plan.id_plan_accion,
-        numero_ticket: plan.numero_ticket,
-        tipo_ticket: plan.tipo_ticket,
-        estado_plan_accion: plan.estado_plan_accion,
-        plan_accion: plan.plan_accion,
-        servicio: plan.servicio,
-        fecha_apertura: plan.fecha_apertura,
-        fecha_cierre: plan.fecha_cierre,
-        encargado: plan.encargado,
-        avance_plan_accion: plan.avance_plan_accion,
-        efectividad: plan.efectividad,
-        reuniones: plan.reuniones.map(reu => ({
-          id_reunion: reu.id_reunion,
-          id_plan_accion: reu.id_plan_accion,
-          titulo: reu.titulo,
-          proposito: reu.proposito,
-          conclusiones: reu.conclusiones,
-          fecha_reunion: reu.fecha_reunion,
-          asistentes: reu.asistentes.map(as => ({
-            id_asistente: as.id_asistente,
-            nombre: as.nombre,
-            cargo: as.cargo,
-            email: as.email,
+    
+    const data = tickets.map(ticket => {
+      // 🧠 Aquí pones los console.log para ver qué datos trae cada ticket
+      console.log("Ticket completo:", ticket.toJSON ? ticket.toJSON() : ticket);
+      console.log("Estado del ticket (estado_ticket_cs):", ticket.estado_ticket_cs);
+      console.log("Estado del ticket (acceso directo):", ticket["ESTADO DEL TICKET CS"]);
+
+      // Luego retornas el objeto con los campos que te interesan
+      return {
+        "NUMERO DE TICKET": ticket.numero_ticket,
+        "ESTADO DEL TICKET CS": ticket.estado_ticket_cs,
+        "ESTADO DEL PLAN DE ACCION": ticket.estado_plan_accion || "Pendiente",
+        "TIPO DE TICKET": ticket.tipo_ticket,
+        planes: ticket.planes.map(plan => ({
+          id_plan_accion: plan.id_plan_accion,
+          numero_ticket: plan.numero_ticket,
+          tipo_ticket: plan.tipo_ticket,
+          estado_plan_accion: plan.estado_plan_accion,
+          plan_accion: plan.plan_accion,
+          servicio: plan.servicio,
+          fecha_apertura: plan.fecha_apertura,
+          fecha_cierre: plan.fecha_cierre,
+          encargado: plan.encargado,
+          avance_plan_accion: plan.avance_plan_accion,
+          efectividad: plan.efectividad,
+          reuniones: plan.reuniones.map(reu => ({
+            id_reunion: reu.id_reunion,
+            id_plan_accion: reu.id_plan_accion,
+            titulo: reu.titulo,
+            proposito: reu.proposito,
+            conclusiones: reu.conclusiones,
+            fecha_reunion: reu.fecha_reunion,
+            asistentes: reu.asistentes.map(as => ({
+              id_asistente: as.id_asistente,
+              nombre: as.nombre,
+              cargo: as.cargo,
+              email: as.email,
+            })),
           })),
         })),
-      })),
-    }));
+      };
+    });
 
     res.json(data);
   } catch (error) {
     console.error("❌ Error al obtener los planes de acción:", error);
     res.status(500).json({ message: "Error al obtener los planes de acción" });
   }
+
   console.log("Datos recibidos:", req.body);
 });
 // ======================
