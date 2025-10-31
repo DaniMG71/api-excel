@@ -248,6 +248,22 @@ app.get('/tipos-ticket', async (req, res) => {
       }
     });
 
+    app.get('/servicios', async (req, res) => {
+  try {
+    const [results] = await sequelize.query(`
+      SELECT DISTINCT servicio 
+      FROM tickets 
+      WHERE servicio IS NOT NULL AND servicio != ''
+      ORDER BY servicio;
+    `);
+    const servicios = results.map(r => r.servicio);
+    res.json({ servicios });
+  } catch (err) {
+    console.error('❌ Error obteniendo servicios:', err);
+    res.status(500).json({ error: 'Error obteniendo servicios' });
+  }
+});
+
     app.post('/tickets', async (req, res) => {
   const t = await sequelize.transaction();  // Transacción para rollback si falla
   try {
