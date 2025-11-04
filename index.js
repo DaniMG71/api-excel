@@ -9,7 +9,7 @@ const getTicketModel = require('./src/models/DynamicTicket');
 const getTiendaModel = require('./src/models/DynamicTienda');
 const getActionPlanModel = require('./src/models/DynamicActionPlan');
 const getMeetingModel = require('./src/models/DynamicMeeting');
-const getAsistenteModel = require('./src/models/DynamicAsistentes');
+const getPersonalModel = require('./src/models/DynamicPersonal.js');
 const getDynamicReunionesAsistentesModel = require('./src/models/DynamicReunionesAsistentes');
 const TicketTienda = require('./src/models/TicketTienda');
 
@@ -138,12 +138,12 @@ async function startServer() {
     console.log('✅ Conectado a PostgreSQL');
 
     // Cargar modelos dinámicos al inicio
-    const [Ticket, Tienda, PlanAccion, Reunion, Asistente, ReunionAsistente] = await Promise.all([
+    const [Ticket, Tienda, PlanAccion, Reunion, Personal, ReunionAsistente] = await Promise.all([
       getTicketModel(),
       getTiendaModel(),
       getActionPlanModel(),
       getMeetingModel(),
-      getAsistenteModel(),
+      getPersonalModel(),
       getDynamicReunionesAsistentesModel(),
       
     ]);
@@ -156,16 +156,16 @@ PlanAccion.hasMany(Reunion, { foreignKey: "id_plan_accion", as: "reuniones" });
 Reunion.belongsTo(PlanAccion, { foreignKey: "id_plan_accion" });
 
 // belongsToMany: muchos a muchos entre reuniones y asistentes
-Reunion.belongsToMany(Asistente, {
+Reunion.belongsToMany(Personal, {
   through: "reunionesasistentes",  // nombre exacto de tu tabla intermedia
   foreignKey: "id_reunion",         // en la tabla intermedia
-  otherKey: "id_asistente",         // en la tabla intermedia
-  as: "asistentes",
+  otherKey: "id_personal",         // en la tabla intermedia
+  as: "personal",
 });
 
-Asistente.belongsToMany(Reunion, {
+Personal.belongsToMany(Reunion, {
   through: "reunionesasistentes",
-  foreignKey: "id_asistente",
+  foreignKey: "id_personal",
   otherKey: "id_reunion",
   as: "reuniones",
 });
@@ -595,8 +595,9 @@ app.get("/plan-accion", async (req, res) => {
               as: "reuniones",
               include: [
                 {
-                  model: Asistente,
-                  as: "asistentes",
+                   model: Personal,
+                   as: "personal",
+                   through: { attributes: ['asistio'] },
                 },
               ],
             },
@@ -607,11 +608,6 @@ app.get("/plan-accion", async (req, res) => {
 
     
     const data = tickets.map(ticket => {
-      // 🧠 Aquí pones los console.log para ver qué datos trae cada ticket
-      console.log("Ticket completo:", ticket.toJSON ? ticket.toJSON() : ticket);
-      console.log("Estado del ticket (estado_ticket_cs):", ticket.estado_ticket_cs);
-      console.log("Estado del ticket (acceso directo):", ticket["ESTADO DEL TICKET CS"]);
-
       // Luego retornas el objeto con los campos que te interesan
       return {
         "NUMERO DE TICKET": ticket.numero_ticket,
@@ -627,7 +623,7 @@ app.get("/plan-accion", async (req, res) => {
           servicio: plan.servicio,
           fecha_apertura: plan.fecha_apertura,
           fecha_cierre: plan.fecha_cierre,
-          encargado: plan.encargado,
+          encargados: plan.encargados || [],
           avance_plan_accion: plan.avance_plan_accion,
           efectividad: plan.efectividad,
           reuniones: plan.reuniones.map(reu => ({
@@ -637,11 +633,11 @@ app.get("/plan-accion", async (req, res) => {
             proposito: reu.proposito,
             conclusiones: reu.conclusiones,
             fecha_reunion: reu.fecha_reunion,
-            asistentes: reu.asistentes.map(as => ({
-              id_asistente: as.id_asistente,
+            personal: reu.personal.map(as => ({
+              id_personal: as.id_personal,
               nombre: as.nombre,
-              cargo: as.cargo,
-              email: as.email,
+              correo: as.correo,
+              asistio: as.reunionesasistentes.asistio,
             })),
           })),
         })),
@@ -678,9 +674,9 @@ app.post("/plan-accion", async (req, res) => {
 
     // Si vienen reuniones, crearlas igual que antes
     if (Array.isArray(reuniones) && reuniones.length > 0) {
-      const { Reunion, Asistente } = require("./src/models"); // ajusta según tu estructura real
+      const { Reunion, Personal } = require("./src/models"); // ajusta según tu estructura real
       for (const reunionData of reuniones) {
-        const { titulo, proposito, conclusiones, fecha_reunion, asistentes } = reunionData;
+        const { titulo, proposito, conclusiones, fecha_reunion, personal } = reunionData;
 
         const nuevaReunion = await Reunion.create(
           {
@@ -693,14 +689,18 @@ app.post("/plan-accion", async (req, res) => {
           { transaction: t }
         );
 
-        if (Array.isArray(asistentes) && asistentes.length > 0) {
-          for (const asistenteData of asistentes) {
-            const [asistente] = await Asistente.findOrCreate({
-              where: { email: asistenteData.email },
-              defaults: asistenteData,
+        if (Array.isArray(reunionData.personal) && reunionData.personal.length > 0) {
+          for (const personaData of reunionData.personal) {
+            const [persona] = await Personal.findOrCreate({
+              where: { correo: personaData.correo },
+              defaults: personaData,
               transaction: t,
             });
-            await nuevaReunion.addAsistente(asistente, { transaction: t });
+            // Agrega con asistio
+            await nuevaReunion.addPersonal(persona, { 
+              through: { asistio: personaData.asistio || false }, 
+              transaction: t 
+            });
           }
         }
       }
@@ -718,6 +718,85 @@ app.post("/plan-accion", async (req, res) => {
       message: "Error al crear plan de acción",
       error: error.message,
     });
+  }
+});
+
+
+// ======================
+// ENDPOINTS DE PERSONAL
+// ======================
+
+// GET /personal/stats - Obtener estadísticas de personal (para VisualizarPersonal)
+app.get('/personal/stats', async (req, res) => {
+  try {
+    console.log('🔍 Obteniendo estadísticas de personal...');
+    
+    // Consulta para obtener personal con conteos agregados
+    const stats = await sequelize.query(`
+  SELECT 
+    p.id_personal AS "personalId",
+    p.nombre,
+    p.correo,
+    COUNT(DISTINCT ra.id_reunion) AS "totalReuniones",
+    COUNT(DISTINCT CASE WHEN pa.estado_plan_accion = 'Pendiente' THEN pa.id_plan_accion END) AS "planesPendientes",
+    COUNT(DISTINCT CASE WHEN pa.estado_plan_accion = 'Completado' THEN pa.id_plan_accion END) AS "planesCompletados"
+  FROM personal p
+  LEFT JOIN reunionesasistentes ra ON p.id_personal = ra.id_personal
+  LEFT JOIN reuniones r ON ra.id_reunion = r.id_reunion
+  LEFT JOIN planaccion pa ON r.id_plan_accion = pa.id_plan_accion  -- ✅ Cambiar "plan_accion" a "planaccion"
+  GROUP BY p.id_personal, p.nombre, p.correo
+  ORDER BY p.nombre;
+`, { type: sequelize.QueryTypes.SELECT });
+    
+    console.log(`✅ Estadísticas obtenidas para ${stats.length} personas`);
+    res.json(stats);
+  } catch (error) {
+    console.error('❌ Error obteniendo estadísticas de personal:', error);
+    res.status(500).json({ error: 'Error obteniendo estadísticas de personal' });
+  }
+});
+
+// GET /personal - Obtener todos los personales (opcional, si necesitas listar sin stats)
+app.get('/personal', async (req, res) => {
+  try {
+    const personal = await Personal.findAll();
+    res.json(personal);
+  } catch (error) {
+    console.error('❌ Error obteniendo personal:', error);
+    res.status(500).json({ error: 'Error obteniendo personal' });
+  }
+});
+
+// POST /personal - Crear nuevo personal
+app.post('/personal', async (req, res) => {
+  try {
+    const { nombre, correo } = req.body;
+    if (!nombre || !correo) {
+      return res.status(400).json({ error: 'Nombre y correo son requeridos' });
+    }
+    
+    const nuevoPersonal = await Personal.create({ nombre, correo });
+    console.log(`✅ Personal creado: ${nuevoPersonal.nombre}`);
+    res.status(201).json(nuevoPersonal);
+  } catch (error) {
+    console.error('❌ Error creando personal:', error);
+    res.status(500).json({ error: 'Error creando personal' });
+  }
+});
+
+// DELETE /personal/:id - Eliminar personal por ID
+app.delete('/personal/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const deleted = await Personal.destroy({ where: { id_personal: id } });
+    if (!deleted) {
+      return res.status(404).json({ error: 'Personal no encontrado' });
+    }
+    console.log(`✅ Personal eliminado: ID ${id}`);
+    res.json({ message: 'Personal eliminado correctamente' });
+  } catch (error) {
+    console.error('❌ Error eliminando personal:', error);
+    res.status(500).json({ error: 'Error eliminando personal' });
   }
 });
 
@@ -745,7 +824,7 @@ app.put("/plan-accion/:id", async (req, res) => {
 
     // Procesa reuniones (crear o actualizar según si tiene id_reunion o no)
     if (Array.isArray(reuniones) && reuniones.length > 0) {
-      const { Reunion, Asistente } = require("./src/models");
+      const { Reunion, Personal } = require("./src/models");
       for (const reunionData of reuniones) {
         const { id_reunion, titulo, proposito, conclusiones, fecha_reunion, asistentes } = reunionData;
         let reunion;
@@ -771,13 +850,16 @@ app.put("/plan-accion/:id", async (req, res) => {
 
         // Procesa asistentes si hay
         if (Array.isArray(asistentes) && asistentes.length > 0) {
-          for (const asistenteData of asistentes) {
-            const [asistente] = await Asistente.findOrCreate({
-              where: { email: asistenteData.email },
-              defaults: asistenteData,
+          for (const personaData of personal) {
+            const [persona] = await Personal.findOrCreate({
+              where: { correo: personaData.correo },
+              defaults: personaData,
               transaction: t,
             });
-            await reunion.addAsistente(asistente, { transaction: t });
+            await nuevaReunion.addPersonal(persona, { 
+              through: { asistio: personaData.asistio || false }, 
+              transaction: t 
+            });
           }
         }
       }
@@ -821,15 +903,14 @@ app.post("/plan-accion/:planId/reunion", async (req, res) => {
       { transaction: t }
     );
 
-    if (Array.isArray(reunionData.asistentes) && reunionData.asistentes.length > 0) {
-      for (const asistenteData of reunionData.asistentes) {
-        console.log(`Agregando asistente:`, asistenteData);  // Log por asistente
-        const [asistente] = await Asistente.findOrCreate({
-          where: { email: asistenteData.email },
-          defaults: asistenteData,
+    if (Array.isArray(reunionData.personal) && reunionData.personal.length > 0) {
+      for (const personaData of reunionData.personal) {
+        const [persona] = await Personal.findOrCreate({
+          where: { correo: personaData.correo },
+          defaults: personaData,
           transaction: t,
         });
-        await nuevaReunion.addAsistente(asistente, { transaction: t });
+        await nuevaReunion.addPersonal(persona, { transaction: t });
       }
     }
 
@@ -870,27 +951,28 @@ app.put("/plan-accion/:planId/reunion/:reunionId", async (req, res) => {
     // Actualiza los campos de la reunión
     await reunion.update(reunionData, { transaction: t });
 
-    if (Array.isArray(reunionData.asistentes)) {
-      const actualesAsistentes = await reunion.getAsistentes({ transaction: t });
-      const nuevosAsistentesEmails = reunionData.asistentes.map(a => a.email);
-
-      // Elimina asistentes no presentes
-      for (const asistente of actualesAsistentes) {
-        if (!nuevosAsistentesEmails.includes(asistente.email)) {
-          await reunion.removeAsistente(asistente, { transaction: t });
-        }
-      }
-
-      // Agrega o actualiza asistentes
-      for (const asistenteData of reunionData.asistentes) {
-        const [asistente] = await Asistente.findOrCreate({
-          where: { email: asistenteData.email },
-          defaults: asistenteData,
-          transaction: t,
-        });
-        await reunion.addAsistente(asistente, { transaction: t });
-      }
-    }
+    if (Array.isArray(reunionData.personal)) {  // Cambia 'asistentes' a 'personal'
+       const actualesAsistentes = await reunion.getPersonal({ transaction: t });  // Cambia 'getPersonalModel' a 'getPersonal'
+       const nuevosAsistentesEmails = reunionData.personal.map(a => a.correo);  // Ya está bien
+       // Elimina asistentes no presentes
+       for (const personal of actualesAsistentes) {
+         if (!nuevosAsistentesEmails.includes(personal.correo)) {
+           await reunion.removePersonal(personal, { transaction: t });
+         }
+       }
+       // Agrega o actualiza asistentes
+       for (const personaData of reunionData.personal) {  // Cambia 'asistentes' a 'personal'
+         const [persona] = await Personal.findOrCreate({
+           where: { correo: personaData.correo },
+           defaults: personaData,
+           transaction: t,
+         });
+         await reunion.addPersonal(persona, { 
+           through: { asistio: personaData.asistio || false },  // Asegura que asistio se guarde
+           transaction: t 
+         });
+       }
+     }
 
     await t.commit();
     res.json(reunion);  // Devuelve la reunión actualizada
