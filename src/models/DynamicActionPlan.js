@@ -30,6 +30,8 @@ async function getActionPlanModel() {
         bit: DataTypes.TEXT,
         decimal: DataTypes.DECIMAL,
         double: DataTypes.DOUBLE,
+        json: DataTypes.JSON,
+        "character varying[]": DataTypes.ARRAY(DataTypes.STRING),
     };
 
     for (const col of columns) {
@@ -39,17 +41,29 @@ async function getActionPlanModel() {
 
         modelDefinition[name] = { type };
 
-        // Detectar primary key (id_plan en tu caso)
+        // Detectar primary key
         if (name.toLowerCase() === "id_plan_accion") {
             modelDefinition[name].primaryKey = true;
-            modelDefinition[name].autoIncrement = true; // 👈 clave del problema
+            modelDefinition[name].autoIncrement = true;
             modelDefinition[name].allowNull = false;
         }
-
     }
 
+    if (!modelDefinition.novedad) {
+        modelDefinition.novedad = {
+            type: DataTypes.TEXT,  // O DataTypes.STRING si prefieres VARCHAR
+            allowNull: true,
+            defaultValue: "",
+        };
+    }   
+
+     modelDefinition.personal = {
+        type: DataTypes.JSON,
+        allowNull: true,
+        defaultValue: [],
+    };
     return sequelize.define("PlanAccion", modelDefinition, {
-        tableName: "planaccion", // 👈 en minúscula
+        tableName: "planaccion",
         timestamps: false,
         createdAt: false,
         updatedAt: false,

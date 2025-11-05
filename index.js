@@ -606,6 +606,8 @@ app.get("/plan-accion", async (req, res) => {
       ],
     });
 
+    console.log("Tickets obtenidos:", tickets.map(t => ({ numero_ticket: t.numero_ticket, planes: t.planes.map(p => ({ id_plan_accion: p.id_plan_accion, encargados: p.encargados })) })));
+
     
     const data = tickets.map(ticket => {
       // Luego retornas el objeto con los campos que te interesan
@@ -614,16 +616,18 @@ app.get("/plan-accion", async (req, res) => {
         "ESTADO DEL TICKET CS": ticket.estado_ticket_cs,
         "ESTADO DEL PLAN DE ACCION": ticket.estado_plan_accion || "Pendiente",
         "TIPO DE TICKET": ticket.tipo_ticket,
+        "GRUPO RESOLUTOR": ticket.grupo_resolutor, 
         planes: ticket.planes.map(plan => ({
           id_plan_accion: plan.id_plan_accion,
           numero_ticket: plan.numero_ticket,
           tipo_ticket: plan.tipo_ticket,
           estado_plan_accion: plan.estado_plan_accion,
           plan_accion: plan.plan_accion,
+          novedad: plan.novedad,
           servicio: plan.servicio,
           fecha_apertura: plan.fecha_apertura,
           fecha_cierre: plan.fecha_cierre,
-          encargados: plan.encargados || [],
+          personal: Array.isArray(plan.personal) ? plan.personal : (plan.encargado ? [plan.encargado] : []),
           avance_plan_accion: plan.avance_plan_accion,
           efectividad: plan.efectividad,
           reuniones: plan.reuniones.map(reu => ({
@@ -670,6 +674,7 @@ app.post("/plan-accion", async (req, res) => {
     const nuevoPlan = await PlanAccion.create({
       ...planData,
       tipo_ticket, // Asegúrate de guardar el tipo_ticket
+      personal: Array.isArray(planData.personal) ? planData.personal : (planData.encargado ? [planData.encargado] : []), 
     }, { transaction: t });
 
     // Si vienen reuniones, crearlas igual que antes
@@ -720,6 +725,7 @@ app.post("/plan-accion", async (req, res) => {
     });
   }
 });
+
 
 
 // ======================
@@ -805,6 +811,7 @@ app.delete('/personal/:id', async (req, res) => {
 // EDITAR PLAN DE ACCIÓN (Flexible)
 // ======================
 app.put("/plan-accion/:id", async (req, res) => {
+  console.log("Datos recibidos en PUT:", req.body);
   const { id } = req.params;
   const { reuniones, tipo_ticket, ...planData } = req.body; // Extrae reuniones y tipo_ticket
   const t = await sequelize.transaction();
@@ -816,17 +823,28 @@ app.put("/plan-accion/:id", async (req, res) => {
       return res.status(404).json({ message: "Plan de acción no encontrado" });
     }
 
-    // Actualiza TODOS los campos que hayan llegado en planData
+    console.log("Plan antes de update:", plan.encargados);  // Log adicional para ver el estado inicial
+
+    // Procesamiento para encargados: convierte 'encargado' a 'encargados' si es necesario y elimina duplicados
+    const updatedData = { ...planData };
+    if (updatedData.encargado && !Array.isArray(updatedData.personal)) {
+      updatedData.personal = [updatedData.encargado];  // Convierte string a array
+    }
+    delete updatedData.encargado;  // Elimina el campo singular para evitar conflictos
+
+    // Actualiza TODOS los campos que hayan llegado en updatedData
     await plan.update({
-      ...planData,
+      ...updatedData,
       tipo_ticket, // Asegúrate de actualizar el tipo_ticket
     }, { transaction: t });
+
+    console.log("Plan después de update:", plan.encargados);  // Log para confirmar el cambio
 
     // Procesa reuniones (crear o actualizar según si tiene id_reunion o no)
     if (Array.isArray(reuniones) && reuniones.length > 0) {
       const { Reunion, Personal } = require("./src/models");
       for (const reunionData of reuniones) {
-        const { id_reunion, titulo, proposito, conclusiones, fecha_reunion, asistentes } = reunionData;
+        const { id_reunion, titulo, proposito, conclusiones, fecha_reunion, asistentes } = reunionData;  // Cambié 'personal' por 'asistentes' (asumiendo que es el campo correcto)
         let reunion;
 
         if (id_reunion) {
@@ -836,7 +854,7 @@ app.put("/plan-accion/:id", async (req, res) => {
           }
           await reunion.update({ titulo, proposito, conclusiones, fecha_reunion }, { transaction: t });
         } else {
-          reunion = await Reunion.create(
+          reunion = await Reunion.create(  // Cambié 'nuevaReunion' por 'reunion' para consistencia
             {
               id_plan_accion: plan.id_plan_accion,
               titulo,
@@ -850,15 +868,15 @@ app.put("/plan-accion/:id", async (req, res) => {
 
         // Procesa asistentes si hay
         if (Array.isArray(asistentes) && asistentes.length > 0) {
-          for (const personaData of personal) {
+          for (const personaData of asistentes) {  // Cambié 'personal' por 'asistentes'
             const [persona] = await Personal.findOrCreate({
               where: { correo: personaData.correo },
               defaults: personaData,
               transaction: t,
             });
-            await nuevaReunion.addPersonal(persona, { 
-              through: { asistio: personaData.asistio || false }, 
-              transaction: t 
+            await reunion.addPersonal(persona, {  // Cambié 'nuevaReunion' por 'reunion'
+              through: { asistio: personaData.asistio || false },
+              transaction: t
             });
           }
         }
