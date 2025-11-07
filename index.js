@@ -12,6 +12,7 @@ const getMeetingModel = require('./src/models/DynamicMeeting');
 const getPersonalModel = require('./src/models/DynamicPersonal.js');
 const getDynamicReunionesAsistentesModel = require('./src/models/DynamicReunionesAsistentes');
 const TicketTienda = require('./src/models/TicketTienda');
+const authorize = require('./src/middlewares/authorize');
 
 const ldap = require('ldapjs');
 
@@ -178,7 +179,7 @@ Personal.belongsToMany(Reunion, {
     // ======================
 // ENDPOINTS DE TICKETS
 // ======================
-app.get('/tickets', async (req, res) => {
+app.get('/tickets', authorize(['admin', 'user']), async (req, res) => {
   try {
     console.log('🔍 Obteniendo todos los tickets con tiendas asociadas...');
     
@@ -221,7 +222,7 @@ app.get('/tickets', async (req, res) => {
   }
 });
 
-app.get('/tipos-ticket', async (req, res) => {
+app.get('/tipos-ticket', authorize(['admin', 'user']), async (req, res) => {
      try {
        const [results] = await sequelize.query(`
          SELECT DISTINCT tipo_ticket 
@@ -237,7 +238,7 @@ app.get('/tipos-ticket', async (req, res) => {
      }
    });
 
-    app.get('/tickets/:id', async (req, res) => {
+    app.get('/tickets/:id', authorize(['admin', 'user']), async (req, res) => {
       try {
         const ticket = await Ticket.findByPk(req.params.id);
         if (!ticket) return res.status(404).json({ error: 'Ticket no encontrado' });
@@ -248,7 +249,7 @@ app.get('/tipos-ticket', async (req, res) => {
       }
     });
 
-    app.get('/servicios', async (req, res) => {
+    app.get('/servicios', authorize(['admin', 'user']), async (req, res) => {
   try {
     const [results] = await sequelize.query(`
       SELECT DISTINCT servicio 
@@ -264,7 +265,7 @@ app.get('/tipos-ticket', async (req, res) => {
   }
 });
 
-    app.post('/tickets', async (req, res) => {
+    app.post('/tickets', authorize(['admin']), async (req, res) => {
   const t = await sequelize.transaction();  // Transacción para rollback si falla
   try {
     console.log('📝 Creando nuevo ticket con tiendas...');
@@ -336,7 +337,7 @@ app.get('/tipos-ticket', async (req, res) => {
     // index.js (actualizado) - Solo el endpoint PUT /tickets se modifica; el resto permanece igual
 // ... (código anterior sin cambios hasta app.put('/tickets/:id', ...))
 
-app.put('/tickets/:id', async (req, res) => {
+app.put('/tickets/:id', authorize(['admin']), async (req, res) => {
   const t = await sequelize.transaction();
   try {
     const { id } = req.params;
@@ -448,7 +449,7 @@ app.put('/tickets/:id', async (req, res) => {
   }
 });
 
-    app.delete('/tickets/:id', async (req, res) => {
+    app.delete('/tickets/:id', authorize(['admin']), async (req, res) => {
       try {
         const deleted = await Ticket.destroy({ where: { numero_ticket: req.params.id } });
         if (!deleted) return res.status(404).json({ error: 'Ticket no encontrado' });
@@ -462,7 +463,7 @@ app.put('/tickets/:id', async (req, res) => {
     // ======================
     // ENDPOINTS DE TIENDAS
     // ======================
-    app.get('/tiendas', async (req, res) => {
+    app.get('/tiendas', authorize(['admin', 'user']), async (req, res) => {
       try {
         const tiendas = await Tienda.findAll();
         res.json(tiendas);
@@ -472,7 +473,7 @@ app.put('/tickets/:id', async (req, res) => {
       }
     });
 
-    app.get('/tiendas/:cod_sap', async (req, res) => {
+    app.get('/tiendas/:cod_sap', authorize(['admin', 'user']), async (req, res) => {
       try {
         const tienda = await Tienda.findByPk(req.params.cod_sap);
         if (!tienda) return res.status(404).json({ error: 'Tienda no encontrada' });
@@ -483,7 +484,7 @@ app.put('/tickets/:id', async (req, res) => {
       }
     });
 
-    app.post('/tiendas', async (req, res) => {
+    app.post('/tiendas', authorize(['admin']), async (req, res) => {
       try {
         const nueva = await Tienda.create(req.body);
         res.status(201).json(nueva);
@@ -493,7 +494,7 @@ app.put('/tickets/:id', async (req, res) => {
       }
     });
 
-    app.put('/tiendas/:cod_sap', async (req, res) => {
+    app.put('/tiendas/:cod_sap', authorize(['admin']), async (req, res) => {
       try {
         const { cod_sap } = req.params;
         const [updated] = await Tienda.update(req.body, { where: { cod_sap } });
@@ -506,7 +507,7 @@ app.put('/tickets/:id', async (req, res) => {
       }
     });
 
-    app.delete('/tiendas/:cod_sap', async (req, res) => {
+    app.delete('/tiendas/:cod_sap', authorize(['admin']), async (req, res) => {
       try {
         const deleted = await Tienda.destroy({ where: { cod_sap: req.params.cod_sap } });
         if (!deleted) return res.status(404).json({ error: 'Tienda no encontrada' });
@@ -517,51 +518,11 @@ app.put('/tickets/:id', async (req, res) => {
       }
     });
 
-    // ======================
-    // LOGIN LDAP
-    // ======================
-    app.post('/auth', (req, res) => {
-      const { user, pass } = req.body;
-      if (!user || !pass) return res.status(400).json({ error: 'Usuario y contraseña requeridos' });
-
-      const client = ldap.createClient({ url: LDAP_URL });
-      const ldapUser = `${user}@${LDAP_DOMAIN}`;
-
-      client.bind(ldapUser, pass, (err) => {
-        if (err) {
-          console.error('❌ Credenciales inválidas:', err.message);
-          client.unbind();
-          return res.status(401).json({ error: 'Credenciales inválidas' });
-        }
-
-        const opts = {
-          filter: `(sAMAccountName=${user})`,
-          scope: 'sub',
-          attributes: ['sAMAccountName', 'displayName', 'memberOf'],
-        };
-
-        client.search(LDAP_BASE_DN, opts, (err, searchRes) => {
-          if (err) {
-            client.unbind();
-            return res.status(500).json({ error: 'Error en búsqueda LDAP' });
-          }
-
-          let userEntry = null;
-          searchRes.on('searchEntry', (entry) => (userEntry = entry.object));
-          searchRes.on('end', () => {
-            client.unbind();
-            if (!userEntry) return res.status(404).json({ error: 'Usuario no encontrado' });
-            res.json({ success: true, user: userEntry });
-          });
-        });
-      });
-    });
-
 
     // ======================
     // ENDPOINT PARA COLUMNAS
     // ======================
-    app.get('/columns', async (req, res) => {
+    app.get('/columns', authorize(['admin', 'user']), async (req, res) => {
       try {
         const [result] = await sequelize.query(`
       SELECT column_name 
@@ -582,7 +543,7 @@ app.put('/tickets/:id', async (req, res) => {
     // ENDPOINT PARA PLAN DE ACCIÓN + REUNIONES
     // ======================
 
-app.get("/plan-accion", async (req, res) => {
+app.get("/plan-accion", authorize(['admin', 'user']), async (req, res) => {
   try {
     const tickets = await Ticket.findAll({
       include: [
@@ -659,7 +620,7 @@ app.get("/plan-accion", async (req, res) => {
 // ======================
 // CREAR PLAN DE ACCIÓN + REUNIONES + ASISTENTES
 // ======================
-app.post("/plan-accion", async (req, res) => {
+app.post("/plan-accion", authorize(['admin']), async (req, res) => {
   console.log("📥 Solicitud recibida:", req.body);
 
   const { reuniones, tipo_ticket, ...planData } = req.body; // Extrae reuniones y tipo_ticket
@@ -733,7 +694,7 @@ app.post("/plan-accion", async (req, res) => {
 // ======================
 
 // GET /personal/stats - Obtener estadísticas de personal (para VisualizarPersonal)
-app.get('/personal/stats', async (req, res) => {
+app.get('/personal/stats', authorize(['admin', 'user']), async (req, res) => {
   try {
     console.log('🔍 Obteniendo estadísticas de personal...');
     
@@ -763,7 +724,7 @@ app.get('/personal/stats', async (req, res) => {
 });
 
 // GET /personal - Obtener todos los personales (opcional, si necesitas listar sin stats)
-app.get('/personal', async (req, res) => {
+app.get('/personal', authorize(['admin', 'user']), async (req, res) => {
   try {
     const personal = await Personal.findAll();
     res.json(personal);
@@ -774,7 +735,7 @@ app.get('/personal', async (req, res) => {
 });
 
 // POST /personal - Crear nuevo personal
-app.post('/personal', async (req, res) => {
+app.post('/personal', authorize(['admin']), async (req, res) => {
   try {
     const { nombre, correo } = req.body;
     if (!nombre || !correo) {
@@ -791,7 +752,7 @@ app.post('/personal', async (req, res) => {
 });
 
 // DELETE /personal/:id - Eliminar personal por ID
-app.delete('/personal/:id', async (req, res) => {
+app.delete('/personal/:id', authorize(['admin']), async (req, res) => {
   try {
     const { id } = req.params;
     const deleted = await Personal.destroy({ where: { id_personal: id } });
@@ -810,7 +771,7 @@ app.delete('/personal/:id', async (req, res) => {
 // ======================
 // EDITAR PLAN DE ACCIÓN (Flexible)
 // ======================
-app.put("/plan-accion/:id", async (req, res) => {
+app.put("/plan-accion/:id", authorize(['admin']), async (req, res) => {
   console.log("Datos recibidos en PUT:", req.body);
   const { id } = req.params;
   const { reuniones, tipo_ticket, ...planData } = req.body; // Extrae reuniones y tipo_ticket
@@ -895,7 +856,7 @@ app.put("/plan-accion/:id", async (req, res) => {
   }
 });
 
-app.post("/plan-accion/:planId/reunion", async (req, res) => {
+app.post("/plan-accion/:planId/reunion", authorize(['admin']), async (req, res) => {
   const { planId } = req.params;
   const reunionData = req.body;  // Incluye asistentes
   const t = await sequelize.transaction();
@@ -942,7 +903,7 @@ app.post("/plan-accion/:planId/reunion", async (req, res) => {
   }
 });
 
-app.put("/plan-accion/:planId/reunion/:reunionId", async (req, res) => {
+app.put("/plan-accion/:planId/reunion/:reunionId", authorize(['admin']), async (req, res) => {
   const planId = parseInt(req.params.planId);  // Convierte a número
   const reunionId = parseInt(req.params.reunionId);  // Convierte a número
   const reunionData = req.body;
