@@ -966,33 +966,59 @@ app.put("/plan-accion/:planId/reunion/:reunionId", async (req, res) => {
       return res.status(404).json({ message: "Reunión no pertenece a este plan" });
     }
 
-    // Actualiza los campos de la reunión
-    await reunion.update(reunionData, { transaction: t });
+    // Actualiza los campos básicos de la reunión (sin personal)
+    const { personal, ...reunionFields } = reunionData;  // Separa personal del resto
+    await reunion.update(reunionFields, { transaction: t });
 
-    if (Array.isArray(reunionData.personal)) {  // Cambia 'asistentes' a 'personal'
-       const actualesAsistentes = await reunion.getPersonal({ transaction: t });  // Cambia 'getPersonalModel' a 'getPersonal'
-       const nuevosAsistentesEmails = reunionData.personal.map(a => a.correo);  // Ya está bien
-       // Elimina asistentes no presentes
-       for (const personal of actualesAsistentes) {
-         if (!nuevosAsistentesEmails.includes(personal.correo)) {
-           await reunion.removePersonal(personal, { transaction: t });
-         }
-       }
-       // Agrega o actualiza asistentes
-       for (const personaData of reunionData.personal) {  // Cambia 'asistentes' a 'personal'
-         const [persona] = await Personal.findOrCreate({
-           where: { correo: personaData.correo },
-           defaults: personaData,
-           transaction: t,
-         });
-         await reunion.addPersonal(persona, { 
-           through: { asistio: personaData.asistio || false },  // Asegura que asistio se guarde
-           transaction: t 
-         });
-       }
-     }
+    // Maneja el personal y asistencia
+    if (Array.isArray(personal)) {
+      // Obtén los asistentes actuales
+      const actualesAsistentes = await reunion.getPersonal({ transaction: t });
+
+      // Crea un mapa de correo -> asistio para los nuevos
+      const nuevosAsistentesMap = {};
+      for (const p of personal) {
+        nuevosAsistentesMap[p.correo] = p.asistio || false;
+      }
+
+      // 1. Actualiza asistio para asistentes existentes y marca para eliminación si no están en nuevos
+      const asistentesAEliminar = [];
+      for (const asistente of actualesAsistentes) {
+        if (nuevosAsistentesMap.hasOwnProperty(asistente.correo)) {
+          // Actualiza asistio en la tabla intermedia
+          await sequelize.models.reunionesasistentes.update(
+            { asistio: nuevosAsistentesMap[asistente.correo] },
+            { where: { id_reunion: reunionId, id_personal: asistente.id_personal }, transaction: t }
+          );
+          delete nuevosAsistentesMap[asistente.correo];  // Remueve del mapa para no agregarlo de nuevo
+        } else {
+          // Marca para eliminación
+          asistentesAEliminar.push(asistente);
+        }
+      }
+
+      // 2. Elimina asistentes no presentes en los nuevos
+      for (const asistente of asistentesAEliminar) {
+        await reunion.removePersonal(asistente, { transaction: t });
+      }
+
+      // 3. Agrega nuevos asistentes (los que quedan en el mapa)
+      for (const correo in nuevosAsistentesMap) {
+        const personaData = personal.find(p => p.correo === correo);
+        const [persona] = await Personal.findOrCreate({
+          where: { correo },
+          defaults: personaData,
+          transaction: t,
+        });
+        await reunion.addPersonal(persona, { 
+          through: { asistio: nuevosAsistentesMap[correo] }, 
+          transaction: t 
+        });
+      }
+    }
 
     await t.commit();
+    console.log(`✅ Reunión ${reunionId} actualizada correctamente`);
     res.json(reunion);  // Devuelve la reunión actualizada
   } catch (error) {
     await t.rollback();
