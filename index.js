@@ -640,7 +640,6 @@ app.post("/plan-accion", authorize(['admin']), async (req, res) => {
 
     // Si vienen reuniones, crearlas igual que antes
     if (Array.isArray(reuniones) && reuniones.length > 0) {
-      const { Reunion, Personal } = require("./src/models"); // ajusta según tu estructura real
       for (const reunionData of reuniones) {
         const { titulo, proposito, conclusiones, fecha_reunion, personal } = reunionData;
 
@@ -801,7 +800,6 @@ app.put("/plan-accion/:id", authorize(['admin']), async (req, res) => {
 
     // Procesa reuniones (crear o actualizar según si tiene id_reunion o no)
     if (Array.isArray(reuniones) && reuniones.length > 0) {
-      const { Reunion, Personal } = require("./src/models");
       for (const reunionData of reuniones) {
         const { id_reunion, titulo, proposito, conclusiones, fecha_reunion, asistentes } = reunionData;  // Cambié 'personal' por 'asistentes' (asumiendo que es el campo correcto)
         let reunion;
@@ -841,9 +839,6 @@ app.put("/plan-accion/:id", authorize(['admin']), async (req, res) => {
         }
       }
     }
-
-    console.log("Personal recibido en PUT:", personal);
-    console.log("asistentes actuales:", actualesAsistentes);
 
     await t.commit();
     res.json({ message: "✅ Plan de acción actualizado correctamente" });
