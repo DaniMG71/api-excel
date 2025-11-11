@@ -158,14 +158,14 @@ Reunion.belongsTo(PlanAccion, { foreignKey: "id_plan_accion" });
 
 // belongsToMany: muchos a muchos entre reuniones y asistentes
 Reunion.belongsToMany(Personal, {
-  through: "reunionesasistentes",  // nombre exacto de tu tabla intermedia
+  through: ReunionAsistente,  // nombre exacto de tu tabla intermedia
   foreignKey: "id_reunion",         // en la tabla intermedia
   otherKey: "id_personal",         // en la tabla intermedia
   as: "personal",
 });
 
 Personal.belongsToMany(Reunion, {
-  through: "reunionesasistentes",
+  through: ReunionAsistente,
   foreignKey: "id_personal",
   otherKey: "id_reunion",
   as: "reuniones",
@@ -600,9 +600,9 @@ app.get("/plan-accion", authorize(['admin', 'user']), async (req, res) => {
             fecha_reunion: reu.fecha_reunion,
             personal: reu.personal.map(as => ({
               id_personal: as.id_personal,
-              nombre: as.nombre,
-              correo: as.correo,
-              asistio: as.reunionesasistentes.asistio,
+              nombre: as.nombre || 'sin nombre',
+              correo: as.correo || 'sin correo',
+            asistio: as.ReunionesAsistentes ? as.ReunionesAsistentes.asistio : false,
             })),
           })),
         })),
@@ -686,8 +686,6 @@ app.post("/plan-accion", authorize(['admin']), async (req, res) => {
     });
   }
 });
-
-
 
 // ======================
 // ENDPOINTS DE PERSONAL
@@ -844,6 +842,9 @@ app.put("/plan-accion/:id", authorize(['admin']), async (req, res) => {
       }
     }
 
+    console.log("Personal recibido en PUT:", personal);
+    console.log("asistentes actuales:", actualesAsistentes);
+
     await t.commit();
     res.json({ message: "✅ Plan de acción actualizado correctamente" });
   } catch (error) {
@@ -903,91 +904,109 @@ app.post("/plan-accion/:planId/reunion", authorize(['admin']), async (req, res) 
   }
 });
 
-app.put("/plan-accion/:planId/reunion/:reunionId", authorize(['admin']), async (req, res) => {
-  const planId = parseInt(req.params.planId);  // Convierte a número
-  const reunionId = parseInt(req.params.reunionId);  // Convierte a número
+app.patch("/plan-accion/:planId/reunion/:reunionId", authorize(['admin']), async (req, res) => {
+  console.log("📥 Solicitud a PATCH /plan-accion/:planId/reunion/:reunionId:", req.body);
+  const planId = parseInt(req.params.planId);
+  const reunionId = parseInt(req.params.reunionId);
   const reunionData = req.body;
-  const t = await sequelize.transaction();  // Inicia transacción
+  const t = await sequelize.transaction();
 
-  console.log(`[DEBUG] Solicitud PUT recibida para planId: ${planId}, reunionId: ${reunionId}, Body:`, req.body);
+  console.log(`[DEBUG] PATCH planId=${planId}, reunionId=${reunionId}`);
 
   try {
-    const reunion = await Reunion.findByPk(reunionId, { transaction: t });  // Busca la reunión
-    console.log(`[DEBUG] Reunión encontrada en DB:`, reunion);
+    // 🔹 1. Buscar reunión
+    const reunion = await Reunion.findByPk(reunionId, {
+      include: [{ model: Personal, as: "personal", through: { attributes: ['asistio'] } }],
+      transaction: t,
+    });
 
     if (!reunion) {
-      console.log(`[DEBUG] Reunión con ID ${reunionId} no encontrada en la DB`);
       await t.rollback();
       return res.status(404).json({ message: "Reunión no encontrada" });
     }
 
-    if (reunion.id_plan_accion !== planId) {  // Comparación corregida
-      console.log(`[DEBUG] ID de plan no coincide: Esperado ${planId}, Encontrado ${reunion.id_plan_accion}`);
+    if (reunion.id_plan_accion !== planId) {
       await t.rollback();
-      return res.status(404).json({ message: "Reunión no pertenece a este plan" });
+      return res.status(400).json({ message: "Reunión no pertenece a este plan" });
     }
 
-    // Actualiza los campos básicos de la reunión (sin personal)
-    const { personal, ...reunionFields } = reunionData;  // Separa personal del resto
+    // 🔹 2. Actualizar campos básicos de la reunión
+    const { personal, ...reunionFields } = reunionData;
     await reunion.update(reunionFields, { transaction: t });
 
-    // Maneja el personal y asistencia
+    // 🔹 3. Sincronizar personal (agregar, eliminar, actualizar asistio)
     if (Array.isArray(personal)) {
-      // Obtén los asistentes actuales
-      const actualesAsistentes = await reunion.getPersonal({ transaction: t });
+      // Obtener IDs actuales de asistentes en la reunión
+      const actualesIds = reunion.personal.map(p => p.id_personal);
+      const nuevosIds = personal.map(p => p.id_personal);
 
-      // Crea un mapa de correo -> asistio para los nuevos
-      const nuevosAsistentesMap = {};
-      for (const p of personal) {
-        nuevosAsistentesMap[p.correo] = p.asistio || false;
+      // IDs a eliminar (están en actuales pero no en nuevos)
+      const idsAEliminar = actualesIds.filter(id => !nuevosIds.includes(id));
+
+      // IDs a agregar (están en nuevos pero no en actuales)
+      const idsAAgregar = nuevosIds.filter(id => !actualesIds.includes(id));
+
+      // IDs a actualizar (comunes, solo asistio)
+      const idsAActualizar = nuevosIds.filter(id => actualesIds.includes(id));
+
+      // Eliminar relaciones no deseadas
+      if (idsAEliminar.length > 0) {
+        await ReunionAsistente.destroy({
+          where: {
+            id_reunion: reunionId,
+            id_personal: idsAEliminar,
+          },
+          transaction: t,
+        });
+        console.log(`[DEBUG] Eliminados ${idsAEliminar.length} asistentes de reunión ${reunionId}`);
       }
 
-      // 1. Actualiza asistio para asistentes existentes y marca para eliminación si no están en nuevos
-      const asistentesAEliminar = [];
-      for (const asistente of actualesAsistentes) {
-        if (nuevosAsistentesMap.hasOwnProperty(asistente.correo)) {
-          // Actualiza asistio en la tabla intermedia
-          await sequelize.models.reunionesasistentes.update(
-            { asistio: nuevosAsistentesMap[asistente.correo] },
-            { where: { id_reunion: reunionId, id_personal: asistente.id_personal }, transaction: t }
-          );
-          delete nuevosAsistentesMap[asistente.correo];  // Remueve del mapa para no agregarlo de nuevo
-        } else {
-          // Marca para eliminación
-          asistentesAEliminar.push(asistente);
+      // Agregar nuevas relaciones
+      for (const id of idsAAgregar) {
+        const personaData = personal.find(p => p.id_personal === id);
+        if (personaData) {
+          const persona = await Personal.findByPk(id, { transaction: t });
+          if (persona) {
+            await reunion.addPersonal(persona, {
+              through: { asistio: personaData.asistio || false },
+              transaction: t,
+            });
+            console.log(`[DEBUG] Agregado asistente ${personaData.nombre} a reunión ${reunionId}`);
+          }
         }
       }
 
-      // 2. Elimina asistentes no presentes en los nuevos
-      for (const asistente of asistentesAEliminar) {
-        await reunion.removePersonal(asistente, { transaction: t });
-      }
-
-      // 3. Agrega nuevos asistentes (los que quedan en el mapa)
-      for (const correo in nuevosAsistentesMap) {
-        const personaData = personal.find(p => p.correo === correo);
-        const [persona] = await Personal.findOrCreate({
-          where: { correo },
-          defaults: personaData,
-          transaction: t,
-        });
-        await reunion.addPersonal(persona, { 
-          through: { asistio: nuevosAsistentesMap[correo] }, 
-          transaction: t 
-        });
+      // Actualizar asistio para existentes
+      for (const id of idsAActualizar) {
+        const personaData = personal.find(p => p.id_personal === id);
+        if (personaData) {
+          const relacion = await ReunionAsistente.findOne({
+            where: {
+              id_reunion: reunionId,
+              id_personal: id,
+            },
+            transaction: t,
+          });
+          if (relacion) {
+            await relacion.update(
+              { asistio: personaData.asistio ?? relacion.asistio },
+              { transaction: t }
+            );
+            console.log(`[DEBUG] Actualizado asistio de ${personaData.nombre} en reunión ${reunionId}`);
+          }
+        }
       }
     }
 
     await t.commit();
-    console.log(`✅ Reunión ${reunionId} actualizada correctamente`);
-    res.json(reunion);  // Devuelve la reunión actualizada
+    res.json({ message: "Reunión actualizada correctamente" });
+
   } catch (error) {
     await t.rollback();
     console.error("❌ Error al actualizar reunión:", error);
     res.status(500).json({ message: "Error al actualizar reunión", error: error.message });
   }
 });
-
 
     // ======================
     // INICIAR SERVIDOR

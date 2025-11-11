@@ -58,8 +58,16 @@ async function getDynamicReunionesAsistentesModel() {
       };
       modelDefinition[name].onDelete = 'CASCADE';
     }
+  }
 
-    // Para asistio, no necesitas lógica extra; se agrega automáticamente como BOOLEAN
+  // 🔧 FORZAR LA INCLUSIÓN DE 'asistio' SI NO EXISTE EN LA TABLA
+  if (!modelDefinition.asistio) {
+    modelDefinition.asistio = {
+      type: DataTypes.BOOLEAN,
+      defaultValue: false,
+      allowNull: false,
+    };
+    console.log('[INFO] Campo "asistio" forzado en el modelo ReunionesAsistentes');
   }
 
   return sequelize.define('ReunionesAsistentes', modelDefinition, {
