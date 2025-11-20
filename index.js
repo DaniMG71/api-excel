@@ -5,6 +5,7 @@ const userRoutes = require("./src/routes/user.routes.js");
 const express = require('express');
 const cors = require('cors');
 const sequelize = require("./src/config/database.js");
+const getUserModel = require('./src/models/DynamicUsers');
 const getTicketModel = require('./src/models/DynamicTicket');
 const getTiendaModel = require('./src/models/DynamicTienda');
 const getActionPlanModel = require('./src/models/DynamicActionPlan');
@@ -22,7 +23,6 @@ app.use(cors());
 
 app.use("/auth", authRoutes)
 app.use("/users", userRoutes)
-
 // ==========================
 // FUNCIONES DE UTILIDAD
 // ==========================
@@ -149,6 +149,11 @@ async function startServer() {
       
     ]);
     console.log('📦 Modelos cargados correctamente');
+
+    const User = await getUserModel();  // getUserModel ya está importado arriba
+    console.log('📦 Modelo User cargado dinámicamente');
+
+
 // Relaciones
 Ticket.hasMany(PlanAccion, { foreignKey: "numero_ticket", as: "planes" });
 PlanAccion.belongsTo(Ticket, { foreignKey: "numero_ticket" });
@@ -174,9 +179,56 @@ Personal.belongsToMany(Reunion, {
 // Sync tablas (solo para dev - quítalo en prod para evitar alteraciones)
 //sequelize.sync({ alter: true }).then(() => console.log('🔄 Tablas sincronizadas'));
 
+   // ======================
+   // ENDPOINTS PARA GESTIÓN DE USUARIOS (ROLES)
+   // ======================
 
+   app.get('/users', authorize(['admin']), async (req, res) => {
+     try {
+       const users = await User.findAll({
+         attributes: ['id', 'username', 'nombre', 'email', 'role', 'created_at', 'last_login']
+       });
+       
+       const formattedUsers = users.map(user => ({
+         id: user.id.toString(),
+         username: user.username,
+         nombre: user.nombre || '',
+         email: user.email || '',
+         role: user.role,
+         created_at: user.created_at ? user.created_at.toISOString().split('T')[0] : null,
+         last_login: user.last_login ? user.last_login.toISOString() : null
+       }));
+       
+       console.log(`✅ Usuarios obtenidos: ${formattedUsers.length}`);
+       res.json(formattedUsers);
+     } catch (error) {
+       console.error('❌ Error obteniendo usuarios:', error);
+       res.status(500).json({ error: 'Error obteniendo usuarios' });
+     }
+   });
 
-    // ======================
+   app.put('/users/:id/role', authorize(['admin']), async (req, res) => {
+  console.log('🔍 PUT /users/:id/role - ID:', req.params.id, 'Nuevo rol:', req.body.role)
+  try {
+    const { id } = req.params
+    const { role } = req.body
+    
+    if (!['admin', 'user'].includes(role)) {
+      return res.status(400).json({ error: 'Rol inválido' })
+    }
+    
+    const [updated] = await User.update({ role }, { where: { id: id } })
+    if (!updated) return res.status(404).json({ error: 'Usuario no encontrado' })
+    
+    console.log('✅ Rol actualizado para ID:', id)
+    res.json({ message: 'Rol actualizado correctamente' })
+  } catch (error) {
+    console.error('❌ Error en PUT /users/:id/role:', error.message)
+    res.status(500).json({ error: 'Error actualizando rol' })
+  }
+})
+
+// ======================
 // ENDPOINTS DE TICKETS
 // ======================
 app.get('/tickets', authorize(['admin', 'user']), async (req, res) => {
@@ -343,7 +395,7 @@ app.put('/tickets/:id', authorize(['admin']), async (req, res) => {
     const { id } = req.params;
     let data = normalizeTicketData(req.body);
     
-    // 🔥 Manejar múltiples tiendas si se envían
+    // Manejar múltiples tiendas si se envían
     const codigosTiendas = data.codigosTiendas || [];
     delete data.codigosTiendas;
     
