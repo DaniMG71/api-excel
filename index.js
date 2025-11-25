@@ -11,6 +11,7 @@ const getTiendaModel = require('./src/models/DynamicTienda');
 const getActionPlanModel = require('./src/models/DynamicActionPlan');
 const getMeetingModel = require('./src/models/DynamicMeeting');
 const getPersonalModel = require('./src/models/DynamicPersonal.js');
+const getTicketsProblemModel = require('./src/models/DynamicTicketsProblem');
 const getDynamicReunionesAsistentesModel = require('./src/models/DynamicReunionesAsistentes');
 const TicketTienda = require('./src/models/TicketTienda');
 const authorize = require('./src/middlewares/authorize');
@@ -139,13 +140,14 @@ async function startServer() {
     console.log('✅ Conectado a PostgreSQL');
 
     // Cargar modelos dinámicos al inicio
-    const [Ticket, Tienda, PlanAccion, Reunion, Personal, ReunionAsistente] = await Promise.all([
+    const [Ticket, Tienda, PlanAccion, Reunion, Personal, ReunionAsistente, TicketsProblem] = await Promise.all([
       getTicketModel(),
       getTiendaModel(),
       getActionPlanModel(),
       getMeetingModel(),
       getPersonalModel(),
       getDynamicReunionesAsistentesModel(),
+      getTicketsProblemModel(),
       
     ]);
     console.log('📦 Modelos cargados correctamente');
@@ -273,22 +275,6 @@ app.get('/tickets', authorize(['admin', 'user']), async (req, res) => {
     res.status(500).json({ error: 'Error obteniendo tickets' });
   }
 });
-
-app.get('/tipos-ticket', authorize(['admin', 'user']), async (req, res) => {
-     try {
-       const [results] = await sequelize.query(`
-         SELECT DISTINCT tipo_ticket 
-         FROM tickets 
-         WHERE tipo_ticket IS NOT NULL AND tipo_ticket != ''
-         ORDER BY tipo_ticket;
-       `);
-       const tipos = results.map(r => r.tipo_ticket);
-       res.json({ tipos });
-     } catch (err) {
-       console.error('❌ Error obteniendo tipos de ticket:', err);
-       res.status(500).json({ error: 'Error obteniendo tipos de ticket' });
-     }
-   });
 
     app.get('/tickets/:id', authorize(['admin', 'user']), async (req, res) => {
       try {
@@ -513,6 +499,81 @@ app.put('/tickets/:id', authorize(['admin']), async (req, res) => {
     });
 
     // ======================
+    // NUEVOS ENDPOINTS PARA TICKETS-PROBLEMS (para TicketsProblems component)
+    // ======================
+    // GET /tickets-problems - Obtener todos los tickets de problemas
+    app.get('/tickets-problems', authorize(['admin', 'user']), async (req, res) => {
+    try {
+      const tickets = await TicketsProblem.findAll();
+
+      const mappedTickets = tickets.map(ticket => ({
+        "NUMERO DE TICKET": ticket.numero_ticket,
+        "TIPO DE TICKET": ticket.tipo_ticket,
+        "ESTADO DEL TICKET CS": ticket.estado_ticket_cs,
+        "FECHA DE CREACION DEL TICKET": ticket.fecha_creacion,
+      }));
+
+      res.json(mappedTickets);
+    } catch (error) {
+      console.error('❌ Error obteniendo tickets-problems:', error);
+      res.status(500).json({ error: 'Error obteniendo tickets de problemas' });
+    }
+  });
+
+
+    // POST /tickets-problems - Crear un nuevo ticket de problema
+    app.post('/tickets-problems', authorize(['admin']), async (req, res) => {
+      console.log('Headers:', req.headers);  // Verifica Content-Type
+  console.log('Raw body:', req.rawBody || 'No rawBody');  // Si usas raw
+  console.log('Parsed body:', req.body);  // Debería ser el objeto, no undefined
+  try {
+    const { numero_ticket, tipo_ticket, estado_ticket_cs, fecha_creacion } = req.body;
+
+    // Validación: numero_ticket debe ser un número válido y no nulo/vacío
+    if (!numero_ticket || isNaN(Number(numero_ticket)) || Number(numero_ticket) <= 0) {
+      return res.status(400).json({ error: 'El número de ticket es requerido y debe ser un número positivo válido.' });
+    }
+
+    const newTicket = await TicketsProblem.create({
+      numero_ticket: Number(numero_ticket),  // Asegura que sea un número
+      tipo_ticket: tipo_ticket || null,  // Opcional: asigna null si está vacío
+      estado_ticket_cs: estado_ticket_cs || null,
+      fecha_creacion: fecha_creacion || null,
+    });
+
+    res.status(201).json(newTicket);
+  } catch (error) {
+    console.error('❌ Error creando ticket-problem:', error);
+    res.status(500).json({ error: 'Error creando ticket de problema' });
+  }
+  console.log("REQ BODY:", req.body);
+});
+
+    // PUT /tickets-problems/:numero - Actualizar un ticket de problema por NUMERO_TICKET
+    app.put('/tickets-problems/:numero', authorize(['admin']), async (req, res) => {
+      try {
+        const { numero_ticket, tipo_ticket, estado_ticket_cs, fecha_creacion } = req.body;
+        const [updated] = await TicketsProblem.update(
+          {
+            tipo_ticket,
+            estado_ticket_cs,
+            fecha_creacion,
+          },
+          { where: { NUMERO_TICKET: req.params.numero } }
+        );
+        if (updated) {
+          const updatedTicket = await TicketsProblem.findByPk(req.params.numero);
+          res.json(updatedTicket);
+        } else {
+          res.status(404).json({ error: 'Ticket de problema no encontrado' });
+        }
+      } catch (error) {
+        console.error('❌ Error actualizando ticket-problem:', error);
+        res.status(500).json({ error: 'Error actualizando ticket de problema' });
+      }
+    });
+
+    // ======================
     // ENDPOINTS DE TIENDAS
     // ======================
     app.get('/tiendas', authorize(['admin', 'user']), async (req, res) => {
@@ -628,7 +689,6 @@ app.get("/plan-accion", authorize(['admin', 'user']), async (req, res) => {
         "NUMERO DE TICKET": ticket.numero_ticket,
         "ESTADO DEL TICKET CS": ticket.estado_ticket_cs,
         "ESTADO DEL PLAN DE ACCION": ticket.estado_plan_accion || "Pendiente",
-        "TIPO DE TICKET": ticket.tipo_ticket,
         "GRUPO RESOLUTOR": ticket.grupo_resolutor, 
         planes: ticket.planes.map(plan => ({
           id_plan_accion: plan.id_plan_accion,
@@ -845,7 +905,6 @@ app.put("/plan-accion/:id", authorize(['admin']), async (req, res) => {
     // Actualiza TODOS los campos que hayan llegado en updatedData
     await plan.update({
       ...updatedData,
-      tipo_ticket, // Asegúrate de actualizar el tipo_ticket
     }, { transaction: t });
 
     console.log("Plan después de update:", plan.encargados);  // Log para confirmar el cambio
