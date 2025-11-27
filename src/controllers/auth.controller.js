@@ -60,7 +60,7 @@ const authLogin = async (req, res) => {
       user.email = ldapEmail;
       updated = true;
     }
-
+ 
     user.last_login = new Date();  // Guarda la fecha/hora actual
     updated = true;
  
@@ -96,9 +96,9 @@ const authLogin = async (req, res) => {
         email: user.email,
       },
       token,
-      
+     
     });
-    
+   
   } catch (err) {
     return res.status(401).json({
       error: "Credenciales inválidas o error de autenticación",

@@ -184,8 +184,30 @@ Personal.belongsToMany(Reunion, {
    // ======================
    // ENDPOINTS PARA GESTIÓN DE USUARIOS (ROLES)
    // ======================
+  app.post('/users/add', authorize(['superadmin']), async (req, res) => {
+  try {
+    const { username, role } = req.body;
+    const newUser = await User.create({ username, role });
+    res.status(201).json(newUser);
+  } catch (error) {
+    console.error('❌ Error en POST /users:', error.message);
+    res.status(500).json({ error: 'Error creando usuario' });
+  }
+});
 
-   app.get('/users', authorize(['admin']), async (req, res) => {
+app.delete('/users/delete', authorize(['superadmin']), async (req, res) => {
+  try {
+    const { username } = req.body;
+    const deleted = await User.destroy({ where: { username } });
+    if (!deleted) return res.status(404).json({ error: 'Usuario no encontrado' });
+    res.json({ message: 'Usuario eliminado correctamente' });
+  } catch (error) {
+    console.error('❌ Error en DELETE /users:', error.message);
+    res.status(500).json({ error: 'Error eliminando usuario' });
+  }
+});
+
+   app.get('/users', authorize(['superadmin']), async (req, res) => {
      try {
        const users = await User.findAll({
          attributes: ['id', 'username', 'nombre', 'email', 'role', 'created_at', 'last_login']
@@ -209,13 +231,12 @@ Personal.belongsToMany(Reunion, {
      }
    });
 
-   app.put('/users/:id/role', authorize(['admin']), async (req, res) => {
-  console.log('🔍 PUT /users/:id/role - ID:', req.params.id, 'Nuevo rol:', req.body.role)
+   app.put('/users/:id/role', authorize(['superadmin']), async (req, res) => {
   try {
     const { id } = req.params
     const { role } = req.body
     
-    if (!['admin', 'user'].includes(role)) {
+    if (!['admin', 'user', 'superadmin'].includes(role)) {
       return res.status(400).json({ error: 'Rol inválido' })
     }
     
@@ -233,7 +254,7 @@ Personal.belongsToMany(Reunion, {
 // ======================
 // ENDPOINTS DE TICKETS
 // ======================
-app.get('/tickets', authorize(['admin', 'user']), async (req, res) => {
+app.get('/tickets', authorize(['admin', 'user', 'superadmin']), async (req, res) => {
   try {
     console.log('🔍 Obteniendo todos los tickets con tiendas asociadas...');
     
@@ -276,7 +297,7 @@ app.get('/tickets', authorize(['admin', 'user']), async (req, res) => {
   }
 });
 
-    app.get('/tickets/:id', authorize(['admin', 'user']), async (req, res) => {
+    app.get('/tickets/:id', authorize(['admin', 'user', 'superadmin']), async (req, res) => {
       try {
         const ticket = await Ticket.findByPk(req.params.id);
         if (!ticket) return res.status(404).json({ error: 'Ticket no encontrado' });
@@ -287,7 +308,7 @@ app.get('/tickets', authorize(['admin', 'user']), async (req, res) => {
       }
     });
 
-    app.get('/servicios', authorize(['admin', 'user']), async (req, res) => {
+    app.get('/servicios', authorize(['admin', 'user', 'superadmin']), async (req, res) => {
   try {
     const [results] = await sequelize.query(`
       SELECT DISTINCT servicio 
@@ -303,7 +324,7 @@ app.get('/tickets', authorize(['admin', 'user']), async (req, res) => {
   }
 });
 
-    app.post('/tickets', authorize(['admin']), async (req, res) => {
+    app.post('/tickets', authorize(['admin', 'superadmin']), async (req, res) => {
   const t = await sequelize.transaction();  // Transacción para rollback si falla
   try {
     console.log('📝 Creando nuevo ticket con tiendas...');
@@ -375,7 +396,7 @@ app.get('/tickets', authorize(['admin', 'user']), async (req, res) => {
     // index.js (actualizado) - Solo el endpoint PUT /tickets se modifica; el resto permanece igual
 // ... (código anterior sin cambios hasta app.put('/tickets/:id', ...))
 
-app.put('/tickets/:id', authorize(['admin']), async (req, res) => {
+app.put('/tickets/:id', authorize(['admin', 'superadmin']), async (req, res) => {
   const t = await sequelize.transaction();
   try {
     const { id } = req.params;
@@ -487,7 +508,7 @@ app.put('/tickets/:id', authorize(['admin']), async (req, res) => {
   }
 });
 
-    app.delete('/tickets/:id', authorize(['admin']), async (req, res) => {
+    app.delete('/tickets/:id', authorize(['admin', 'superadmin']), async (req, res) => {
       try {
         const deleted = await Ticket.destroy({ where: { numero_ticket: req.params.id } });
         if (!deleted) return res.status(404).json({ error: 'Ticket no encontrado' });
@@ -502,7 +523,7 @@ app.put('/tickets/:id', authorize(['admin']), async (req, res) => {
     // NUEVOS ENDPOINTS PARA TICKETS-PROBLEMS (para TicketsProblems component)
     // ======================
     // GET /tickets-problems - Obtener todos los tickets de problemas
-    app.get('/tickets-problems', authorize(['admin', 'user']), async (req, res) => {
+    app.get('/tickets-problems', authorize(['admin', 'user', 'superadmin']), async (req, res) => {
     try {
       const tickets = await TicketsProblem.findAll();
 
@@ -522,7 +543,7 @@ app.put('/tickets/:id', authorize(['admin']), async (req, res) => {
 
 
     // POST /tickets-problems - Crear un nuevo ticket de problema
-    app.post('/tickets-problems', authorize(['admin']), async (req, res) => {
+    app.post('/tickets-problems', authorize(['admin', 'superadmin']), async (req, res) => {
       console.log('Headers:', req.headers);  // Verifica Content-Type
   console.log('Raw body:', req.rawBody || 'No rawBody');  // Si usas raw
   console.log('Parsed body:', req.body);  // Debería ser el objeto, no undefined
@@ -550,7 +571,7 @@ app.put('/tickets/:id', authorize(['admin']), async (req, res) => {
 });
 
     // PUT /tickets-problems/:numero - Actualizar un ticket de problema por NUMERO_TICKET
-    app.put('/tickets-problems/:numero', authorize(['admin']), async (req, res) => {
+    app.put('/tickets-problems/:numero', authorize(['admin', 'superadmin']), async (req, res) => {
       try {
         const { numero_ticket, tipo_ticket, estado_ticket_cs, fecha_creacion } = req.body;
         const [updated] = await TicketsProblem.update(
@@ -576,7 +597,7 @@ app.put('/tickets/:id', authorize(['admin']), async (req, res) => {
     // ======================
     // ENDPOINTS DE TIENDAS
     // ======================
-    app.get('/tiendas', authorize(['admin', 'user']), async (req, res) => {
+    app.get('/tiendas', authorize(['admin', 'user', 'superadmin']), async (req, res) => {
       try {
         const tiendas = await Tienda.findAll();
         res.json(tiendas);
@@ -586,7 +607,7 @@ app.put('/tickets/:id', authorize(['admin']), async (req, res) => {
       }
     });
 
-    app.get('/tiendas/:cod_sap', authorize(['admin', 'user']), async (req, res) => {
+    app.get('/tiendas/:cod_sap', authorize(['admin', 'user', 'superadmin']), async (req, res) => {
       try {
         const tienda = await Tienda.findByPk(req.params.cod_sap);
         if (!tienda) return res.status(404).json({ error: 'Tienda no encontrada' });
@@ -597,7 +618,7 @@ app.put('/tickets/:id', authorize(['admin']), async (req, res) => {
       }
     });
 
-    app.post('/tiendas', authorize(['admin']), async (req, res) => {
+    app.post('/tiendas', authorize(['admin', 'superadmin']), async (req, res) => {
       try {
         const nueva = await Tienda.create(req.body);
         res.status(201).json(nueva);
@@ -607,7 +628,7 @@ app.put('/tickets/:id', authorize(['admin']), async (req, res) => {
       }
     });
 
-    app.put('/tiendas/:cod_sap', authorize(['admin']), async (req, res) => {
+    app.put('/tiendas/:cod_sap', authorize(['admin', 'superadmin']), async (req, res) => {
       try {
         const { cod_sap } = req.params;
         const [updated] = await Tienda.update(req.body, { where: { cod_sap } });
@@ -620,7 +641,7 @@ app.put('/tickets/:id', authorize(['admin']), async (req, res) => {
       }
     });
 
-    app.delete('/tiendas/:cod_sap', authorize(['admin']), async (req, res) => {
+    app.delete('/tiendas/:cod_sap', authorize(['admin', 'superadmin']), async (req, res) => {
       try {
         const deleted = await Tienda.destroy({ where: { cod_sap: req.params.cod_sap } });
         if (!deleted) return res.status(404).json({ error: 'Tienda no encontrada' });
@@ -635,7 +656,7 @@ app.put('/tickets/:id', authorize(['admin']), async (req, res) => {
     // ======================
     // ENDPOINT PARA COLUMNAS
     // ======================
-    app.get('/columns', authorize(['admin', 'user']), async (req, res) => {
+    app.get('/columns', authorize(['admin', 'user', 'superadmin']), async (req, res) => {
       try {
         const [result] = await sequelize.query(`
       SELECT column_name 
@@ -656,7 +677,7 @@ app.put('/tickets/:id', authorize(['admin']), async (req, res) => {
     // ENDPOINT PARA PLAN DE ACCIÓN + REUNIONES
     // ======================
 
-app.get("/plan-accion", authorize(['admin', 'user']), async (req, res) => {
+app.get("/plan-accion", authorize(['admin', 'user', 'superadmin']), async (req, res) => {
   try {
     const tickets = await Ticket.findAll({
       include: [
@@ -732,7 +753,7 @@ app.get("/plan-accion", authorize(['admin', 'user']), async (req, res) => {
 // ======================
 // CREAR PLAN DE ACCIÓN + REUNIONES + ASISTENTES
 // ======================
-app.post("/plan-accion", authorize(['admin']), async (req, res) => {
+app.post("/plan-accion", authorize(['admin', 'superadmin']), async (req, res) => {
   console.log("📥 Solicitud recibida:", req.body);
 
   const { reuniones, tipo_ticket, ...planData } = req.body; // Extrae reuniones y tipo_ticket
@@ -803,7 +824,7 @@ app.post("/plan-accion", authorize(['admin']), async (req, res) => {
 // ======================
 
 // GET /personal/stats - Obtener estadísticas de personal (para VisualizarPersonal)
-app.get('/personal/stats', authorize(['admin', 'user']), async (req, res) => {
+app.get('/personal/stats', authorize(['admin', 'user', 'superadmin']), async (req, res) => {
   try {
     console.log('🔍 Obteniendo estadísticas de personal...');
     
@@ -833,7 +854,7 @@ app.get('/personal/stats', authorize(['admin', 'user']), async (req, res) => {
 });
 
 // GET /personal - Obtener todos los personales (opcional, si necesitas listar sin stats)
-app.get('/personal', authorize(['admin', 'user']), async (req, res) => {
+app.get('/personal', authorize(['admin', 'user', 'superadmin']), async (req, res) => {
   try {
     const personal = await Personal.findAll();
     res.json(personal);
@@ -844,7 +865,7 @@ app.get('/personal', authorize(['admin', 'user']), async (req, res) => {
 });
 
 // POST /personal - Crear nuevo personal
-app.post('/personal', authorize(['admin']), async (req, res) => {
+app.post('/personal', authorize(['admin', 'superadmin']), async (req, res) => {
   try {
     const { nombre, correo } = req.body;
     if (!nombre || !correo) {
@@ -861,7 +882,7 @@ app.post('/personal', authorize(['admin']), async (req, res) => {
 });
 
 // DELETE /personal/:id - Eliminar personal por ID
-app.delete('/personal/:id', authorize(['admin']), async (req, res) => {
+app.delete('/personal/:id', authorize(['admin', 'superadmin']), async (req, res) => {
   try {
     const { id } = req.params;
     const deleted = await Personal.destroy({ where: { id_personal: id } });
@@ -880,7 +901,7 @@ app.delete('/personal/:id', authorize(['admin']), async (req, res) => {
 // ======================
 // EDITAR PLAN DE ACCIÓN (Flexible)
 // ======================
-app.put("/plan-accion/:id", authorize(['admin']), async (req, res) => {
+app.put("/plan-accion/:id", authorize(['admin', 'superadmin']), async (req, res) => {
   console.log("Datos recibidos en PUT:", req.body);
   const { id } = req.params;
   const { reuniones, tipo_ticket, ...planData } = req.body; // Extrae reuniones y tipo_ticket
@@ -963,7 +984,7 @@ app.put("/plan-accion/:id", authorize(['admin']), async (req, res) => {
   }
 });
 
-app.post("/plan-accion/:planId/reunion", authorize(['admin']), async (req, res) => {
+app.post("/plan-accion/:planId/reunion", authorize(['admin', 'superadmin']), async (req, res) => {
   const { planId } = req.params;
   const reunionData = req.body;  // Incluye asistentes
   const t = await sequelize.transaction();
@@ -1010,7 +1031,7 @@ app.post("/plan-accion/:planId/reunion", authorize(['admin']), async (req, res) 
   }
 });
 
-app.patch("/plan-accion/:planId/reunion/:reunionId", authorize(['admin']), async (req, res) => {
+app.patch("/plan-accion/:planId/reunion/:reunionId", authorize(['admin', 'superadmin']), async (req, res) => {
   console.log("📥 Solicitud a PATCH /plan-accion/:planId/reunion/:reunionId:", req.body);
   const planId = parseInt(req.params.planId);
   const reunionId = parseInt(req.params.reunionId);

@@ -1,6 +1,6 @@
 const ldap = require("ldapjs");
 
-const authenticateLDAP = (username, password) => {
+const authenticate = (username, password) => {
   return new Promise((resolve, reject) => {
     const client = ldap.createClient({
       url: process.env.LDAP_URL,
@@ -25,4 +25,4 @@ const authenticateLDAP = (username, password) => {
   });
 };
 
-module.exports = { authenticateLDAP };
+module.exports = { authenticate };
