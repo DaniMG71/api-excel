@@ -10,6 +10,8 @@ function generateToken(payload) {
     case "user":
       expiresIn = "30m"; // User: 30 minutos
       break;
+    case "superadmin":
+      expiresIn = "5h"; 
     default:
       expiresIn = "5m"; // Valor por defecto
       break;

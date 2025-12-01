@@ -722,7 +722,9 @@ app.get("/plan-accion", authorize(['admin', 'user', 'superadmin']), async (req, 
           fecha_apertura: plan.fecha_apertura,
           fecha_cierre: plan.fecha_cierre,
           personal: Array.isArray(plan.personal) ? plan.personal : (plan.encargado ? [plan.encargado] : []),
+          porcentaje_plan: plan.porcentaje_plan,
           avance_plan_accion: plan.avance_plan_accion,
+          num_dias_plan: plan.num_dias_plan || 0,  // Nueva
           efectividad: plan.efectividad,
           reuniones: plan.reuniones.map(reu => ({
             id_reunion: reu.id_reunion,
