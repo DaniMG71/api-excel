@@ -523,23 +523,41 @@ app.put('/tickets/:id', authorize(['admin', 'superadmin']), async (req, res) => 
     // NUEVOS ENDPOINTS PARA TICKETS-PROBLEMS (para TicketsProblems component)
     // ======================
     // GET /tickets-problems - Obtener todos los tickets de problemas
-    app.get('/tickets-problems', authorize(['admin', 'user', 'superadmin']), async (req, res) => {
-    try {
-      const tickets = await TicketsProblem.findAll();
-
-      const mappedTickets = tickets.map(ticket => ({
-        "NUMERO DE TICKET": ticket.numero_ticket,
-        "TIPO DE TICKET": ticket.tipo_ticket,
-        "ESTADO DEL TICKET CS": ticket.estado_ticket_cs,
-        "FECHA DE CREACION DEL TICKET": ticket.fecha_creacion,
-      }));
-
-      res.json(mappedTickets);
-    } catch (error) {
-      console.error('❌ Error obteniendo tickets-problems:', error);
-      res.status(500).json({ error: 'Error obteniendo tickets de problemas' });
+    // REEMPLAZAR el endpoint existente con este:
+app.get('/tickets-problems', authorize(['admin', 'user', 'superadmin']), async (req, res) => {
+  try {
+    const { numero } = req.query;
+    
+    let tickets;
+    
+    if (numero) {
+      // Búsqueda por número específico
+      console.log(`🔍 Buscando ticket problem número: ${numero}`);
+      tickets = await TicketsProblem.findAll({
+        where: { numero_ticket: numero }
+      });
+      
+      if (tickets.length === 0) {
+        return res.status(404).json({ error: 'Ticket problem no encontrado' });
+      }
+    } else {
+      // Obtener todos
+      tickets = await TicketsProblem.findAll();
     }
-  });
+
+    const mappedTickets = tickets.map(ticket => ({
+      "NUMERO DE TICKET": ticket.numero_ticket,
+      "TIPO DE TICKET": ticket.tipo_ticket,
+      "ESTADO DEL TICKET CS": ticket.estado_ticket_cs,
+      "FECHA DE CREACION DEL TICKET": ticket.fecha_creacion,
+    }));
+
+    res.json(mappedTickets);
+  } catch (error) {
+    console.error('❌ Error obteniendo tickets-problems:', error);
+    res.status(500).json({ error: 'Error obteniendo tickets de problemas' });
+  }
+});
 
 
     // POST /tickets-problems - Crear un nuevo ticket de problema
@@ -1296,6 +1314,187 @@ app.put('/reuniones/:id', authorize(['admin', 'superadmin']), async (req, res) =
     }
     console.error('❌ Error actualizando reunión:', error);
     res.status(500).json({ error: 'Error actualizando reunión', message: error.message });
+  }
+});
+
+// ============================================
+// PLAN ACCION PROBLEMS
+// ============================================
+
+// GET /plan-accion-problem - Obtener planes de acción SOLO de tickets problem
+// AGREGAR este nuevo endpoint después de /plan-accion:
+app.get("/plan-accion-problem", authorize(['admin', 'user', 'superadmin']), async (req, res) => {
+  try {
+    console.log('🔍 Obteniendo planes de acción de tickets problem...');
+    
+    const ticketsProblems = await TicketsProblem.findAll();
+    const problemTicketNumbers = ticketsProblems.map(t => t.numero_ticket);
+    
+    console.log(`📋 Tickets problem encontrados: ${problemTicketNumbers.length} - [${problemTicketNumbers.join(', ')}]`);
+    
+    if (problemTicketNumbers.length === 0) {
+      console.log('⚠️ No hay tickets problem en la base de datos');
+      return res.json([]);
+    }
+    
+    const planesData = await PlanAccion.findAll({
+      where: {
+        numero_ticket: problemTicketNumbers,
+        tipo_ticket: 'problem'
+      },
+      include: [
+        {
+          model: Reunion,
+          as: "reuniones",
+          include: [
+            {
+              model: Personal,
+              as: "personal",
+              through: { attributes: ['asistio'] },
+            },
+          ],
+        },
+      ],
+    });
+
+    console.log(`📊 Planes de acción encontrados: ${planesData.length}`);
+
+    const ticketsMap = new Map();
+    
+    // IMPORTANTE: Agregar TODOS los tickets problem, aunque no tengan planes
+    for (const ticketProblem of ticketsProblems) {
+      ticketsMap.set(ticketProblem.numero_ticket, {
+        "NUMERO DE TICKET": ticketProblem.numero_ticket,
+        "TIPO DE TICKET": "problem",
+        "ESTADO DEL TICKET CS": ticketProblem.estado_ticket_cs || "N/A",
+        "ESTADO DEL PLAN DE ACCION": "Pendiente",
+        "GRUPO RESOLUTOR": "N/A",
+        planes: []
+      });
+    }
+    
+    // Luego agregar los planes existentes
+    for (const plan of planesData) {
+      const ticketNumber = plan.numero_ticket;
+      
+      if (ticketsMap.has(ticketNumber)) {
+        const ticket = ticketsMap.get(ticketNumber);
+        ticket["ESTADO DEL PLAN DE ACCION"] = plan.estado_plan_accion || "Pendiente";
+        
+        ticket.planes.push({
+          id_plan_accion: plan.id_plan_accion,
+          numero_ticket: plan.numero_ticket,
+          tipo_ticket: plan.tipo_ticket,
+          estado_plan_accion: plan.estado_plan_accion,
+          plan_accion: plan.plan_accion,
+          novedad: plan.novedad,
+          servicio: plan.servicio,
+          fecha_apertura: plan.fecha_apertura,
+          fecha_cierre: plan.fecha_cierre,
+          personal: Array.isArray(plan.personal) ? plan.personal : [],
+          porcentaje_plan: plan.porcentaje_plan,
+          avance_plan_accion: plan.avance_plan_accion,
+          num_dias_plan: plan.num_dias_plan || 0,
+          efectividad: plan.efectividad,
+          reuniones: plan.reuniones.map(reu => ({
+            id_reunion: reu.id_reunion,
+            id_plan_accion: reu.id_plan_accion,
+            titulo: reu.titulo,
+            proposito: reu.proposito,
+            conclusiones: reu.conclusiones,
+            fecha_reunion: reu.fecha_reunion,
+            personal: reu.personal.map(as => ({
+              id_personal: as.id_personal,
+              nombre: as.nombre || 'sin nombre',
+              correo: as.correo || 'sin correo',
+              asistio: as.ReunionesAsistentes ? as.ReunionesAsistentes.asistio : false,
+            })),
+          })),
+        });
+      }
+    }
+
+    const data = Array.from(ticketsMap.values());
+    console.log(`✅ Enviando ${data.length} tickets problem (${planesData.length} con planes)`);
+    res.json(data);
+    
+  } catch (error) {
+    console.error("❌ Error al obtener planes de acción de tickets problem:", error);
+    res.status(500).json({ message: "Error al obtener planes de acción", error: error.message });
+  }
+});
+
+// AGREGAR este endpoint:
+app.post("/plan-accion-problem", authorize(['admin', 'superadmin']), async (req, res) => {
+  console.log("📥 Solicitud para crear plan de acción de ticket problem:", req.body);
+
+  const { numero_ticket, reuniones, tipo_ticket, ...planData } = req.body;
+  const t = await sequelize.transaction();
+
+  try {
+    const ticketProblem = await TicketsProblem.findByPk(numero_ticket, { transaction: t });
+    if (!ticketProblem) {
+      await t.rollback();
+      return res.status(404).json({ 
+        message: "Ticket problem no encontrado",
+        error: `No existe ticket problem con número ${numero_ticket}` 
+      });
+    }
+
+    console.log(`✅ Ticket problem ${numero_ticket} verificado`);
+
+    const nuevoPlan = await PlanAccion.create({
+      ...planData,
+      numero_ticket: numero_ticket,
+      tipo_ticket: 'problem',
+      personal: Array.isArray(planData.personal) ? planData.personal : [],
+    }, { transaction: t });
+
+    console.log(`✅ Plan de acción creado: ID ${nuevoPlan.id_plan_accion}`);
+
+    if (Array.isArray(reuniones) && reuniones.length > 0) {
+      for (const reunionData of reuniones) {
+        const { titulo, proposito, conclusiones, fecha_reunion, personal } = reunionData;
+
+        const nuevaReunion = await Reunion.create({
+          id_plan_accion: nuevoPlan.id_plan_accion,
+          titulo,
+          proposito,
+          conclusiones,
+          fecha_reunion,
+        }, { transaction: t });
+
+        if (Array.isArray(personal) && personal.length > 0) {
+          for (const personaData of personal) {
+            const [persona] = await Personal.findOrCreate({
+              where: { correo: personaData.correo },
+              defaults: personaData,
+              transaction: t,
+            });
+            await nuevaReunion.addPersonal(persona, { 
+              through: { asistio: personaData.asistio || false }, 
+              transaction: t 
+            });
+          }
+        }
+      }
+    }
+
+    await t.commit();
+    console.log(`✅ Plan de acción de ticket problem creado exitosamente`);
+    
+    res.status(201).json({
+      message: "✅ Plan de acción creado con éxito para ticket problem",
+      plan: nuevoPlan,
+    });
+    
+  } catch (error) {
+    await t.rollback();
+    console.error("❌ Error al crear plan de acción de ticket problem:", error);
+    res.status(500).json({
+      message: "Error al crear plan de acción",
+      error: error.message,
+    });
   }
 });
 
