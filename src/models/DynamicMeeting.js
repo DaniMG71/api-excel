@@ -40,7 +40,7 @@ async function getMeetingModel() {
     // Detectar primary key por nombre exacto
     if (name === 'id_reunion') {
      modelDefinition[name].primaryKey = true;
-            modelDefinition[name].autoIncrement = true; // 👈 clave del problema
+            modelDefinition[name].autoIncrement = true; 
             modelDefinition[name].allowNull = false;
     }
   }

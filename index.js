@@ -1137,6 +1137,168 @@ app.patch("/plan-accion/:planId/reunion/:reunionId", authorize(['admin', 'supera
   }
 });
 
+// ======================
+// ENDPOINTS PARA REUNIONES (para TicketsProblems y otros)
+// ======================
+
+// GET /reuniones/ticket/:ticketNumber - Obtener reuniones de un ticket específico
+app.get('/reuniones/ticket/:ticketNumber', authorize(['admin', 'user', 'superadmin']), async (req, res) => {
+  try {
+    const { ticketNumber } = req.params;
+    const reuniones = await Reunion.findAll({
+      where: { id_ticket: ticketNumber },
+      include: [
+        {
+          model: Personal,
+          as: 'personal',
+          through: { attributes: ['asistio'] },  // Incluye el campo 'asistio' de la tabla intermedia
+        },
+      ],
+    });
+    res.json(reuniones);
+  } catch (error) {
+    console.error('❌ Error obteniendo reuniones del ticket:', error);
+    res.status(500).json({ error: 'Error obteniendo reuniones del ticket' });
+  }
+});
+
+// POST /reuniones - Crear una nueva reunión (para tickets o planes)
+app.post('/reuniones', authorize(['admin', 'superadmin']), async (req, res) => {
+  const t = await sequelize.transaction();
+  try {
+    const { id_plan_accion, id_ticket, titulo, proposito, conclusiones, fecha_reunion, personal } = req.body;
+
+    // Validación básica
+    if (!titulo) {
+      return res.status(400).json({ error: 'El título es requerido' });
+    }
+
+    const nuevaReunion = await Reunion.create({
+      id_plan_accion: id_plan_accion || null,  // Puede ser null para tickets
+      id_ticket: id_ticket || null,  // Para tickets sin plan
+      titulo,
+      proposito,
+      conclusiones,
+      fecha_reunion,
+    }, { transaction: t });
+
+    // Agregar personal si se proporciona
+    if (Array.isArray(personal) && personal.length > 0) {
+      for (const personaData of personal) {
+        const [persona] = await Personal.findOrCreate({
+          where: { correo: personaData.correo },
+          defaults: { nombre: personaData.nombre, correo: personaData.correo },
+          transaction: t,
+        });
+        await nuevaReunion.addPersonal(persona, {
+          through: { asistio: personaData.asistio || false },
+          transaction: t,
+        });
+      }
+    }
+
+    await t.commit();
+    console.log(`✅ Reunión creada: ${titulo}`);
+    res.status(201).json(nuevaReunion);
+  } catch (error) {
+    await t.rollback();
+    console.error('❌ Error creando reunión:', error);
+    res.status(500).json({ error: 'Error creando reunión' });
+  }
+});
+
+// PUT /reuniones/:id - Actualizar una reunión existente (para edición y asistencia)
+app.put('/reuniones/:id', authorize(['admin', 'superadmin']), async (req, res) => {
+  const t = await sequelize.transaction();
+  try {
+    const { id } = req.params; // ✅ id viene del parámetro de la URL
+    const { titulo, proposito, conclusiones, fecha_reunion, personal } = req.body;
+
+    console.log(`[DEBUG] PUT /reuniones/${id} - Body:`, req.body);
+
+    const reunion = await Reunion.findByPk(id, {
+      include: [{ model: Personal, as: 'personal', through: { attributes: ['asistio'] } }],
+      transaction: t,
+    });
+    
+    if (!reunion) {
+      await t.rollback();
+      console.error(`❌ Reunión con ID ${id} no encontrada`);
+      return res.status(404).json({ error: 'Reunión no encontrada' });
+    }
+
+    // Actualizar campos básicos
+    await reunion.update({ titulo, proposito, conclusiones, fecha_reunion }, { transaction: t });
+    console.log(`✅ Campos básicos actualizados para reunión ${id}`);
+
+    // Sincronizar personal y asistencia
+    if (Array.isArray(personal)) {
+      const actualesIds = reunion.personal.map(p => p.id_personal);
+      const nuevosIds = personal.map(p => p.id_personal);
+
+      console.log(`[DEBUG] IDs actuales: [${actualesIds}], IDs nuevos: [${nuevosIds}]`);
+
+      // IDs a eliminar
+      const idsAEliminar = actualesIds.filter(idActual => !nuevosIds.includes(idActual));
+      if (idsAEliminar.length > 0) {
+        await ReunionAsistente.destroy({
+          where: { id_reunion: id, id_personal: idsAEliminar }, // ✅ Usar 'id' no 'reunionId'
+          transaction: t,
+        });
+        console.log(`✅ Eliminados ${idsAEliminar.length} asistentes de reunión ${id}`);
+      }
+
+      // IDs a agregar
+      const idsAAgregar = nuevosIds.filter(idNuevo => !actualesIds.includes(idNuevo));
+      for (const idPers of idsAAgregar) {
+        const personaData = personal.find(p => p.id_personal === idPers);
+        if (personaData) {
+          const persona = await Personal.findByPk(idPers, { transaction: t });
+          if (persona) {
+            await reunion.addPersonal(persona, {
+              through: { asistio: personaData.asistio || false },
+              transaction: t,
+            });
+            console.log(`✅ Agregado asistente ${personaData.nombre} a reunión ${id}`);
+          }
+        }
+      }
+
+      // IDs a actualizar (solo asistio)
+      const idsAActualizar = nuevosIds.filter(idNuevo => actualesIds.includes(idNuevo));
+      for (const idPers of idsAActualizar) {
+        const personaData = personal.find(p => p.id_personal === idPers);
+        if (personaData) {
+          const relacion = await ReunionAsistente.findOne({
+            where: { id_reunion: id, id_personal: idPers }, // ✅ Usar 'id' no 'reunionId'
+            transaction: t,
+          });
+          if (relacion) {
+            await relacion.update({ asistio: personaData.asistio ?? relacion.asistio }, { transaction: t });
+            console.log(`✅ Actualizado asistio de ${personaData.nombre} en reunión ${id}`);
+          }
+        }
+      }
+    }
+
+    await t.commit();
+    console.log(`✅ Reunión ${id} actualizada correctamente`);
+    
+    // Recargar la reunión actualizada con personal
+    const reunionActualizada = await Reunion.findByPk(id, {
+      include: [{ model: Personal, as: 'personal', through: { attributes: ['asistio'] } }],
+    });
+    res.json(reunionActualizada);
+  } catch (error) {
+    // ✅ Verificar si la transacción ya fue finalizada antes de hacer rollback
+    if (!t.finished) {
+      await t.rollback();
+    }
+    console.error('❌ Error actualizando reunión:', error);
+    res.status(500).json({ error: 'Error actualizando reunión', message: error.message });
+  }
+});
+
     // ======================
     // INICIAR SERVIDOR
     // ======================
