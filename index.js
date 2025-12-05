@@ -15,6 +15,8 @@ const getTicketsProblemModel = require('./src/models/DynamicTicketsProblem');
 const getDynamicReunionesAsistentesModel = require('./src/models/DynamicReunionesAsistentes');
 const TicketTienda = require('./src/models/TicketTienda');
 const authorize = require('./src/middlewares/authorize');
+const Sequelize = require('sequelize');
+
 
 const ldap = require('ldapjs');
 
@@ -177,6 +179,7 @@ Personal.belongsToMany(Reunion, {
   otherKey: "id_reunion",
   as: "reuniones",
 });
+
 
 // Sync tablas (solo para dev - quítalo en prod para evitar alteraciones)
 //sequelize.sync({ alter: true }).then(() => console.log('🔄 Tablas sincronizadas'));
@@ -394,7 +397,6 @@ app.get('/tickets', authorize(['admin', 'user', 'superadmin']), async (req, res)
 });
 
     // index.js (actualizado) - Solo el endpoint PUT /tickets se modifica; el resto permanece igual
-// ... (código anterior sin cambios hasta app.put('/tickets/:id', ...))
 
 app.put('/tickets/:id', authorize(['admin', 'superadmin']), async (req, res) => {
   const t = await sequelize.transaction();
@@ -520,10 +522,8 @@ app.put('/tickets/:id', authorize(['admin', 'superadmin']), async (req, res) => 
     });
 
     // ======================
-    // NUEVOS ENDPOINTS PARA TICKETS-PROBLEMS (para TicketsProblems component)
+    // NUEVOS ENDPOINTS PARA TICKETS-PROBLEMS
     // ======================
-    // GET /tickets-problems - Obtener todos los tickets de problemas
-    // REEMPLAZAR el endpoint existente con este:
 app.get('/tickets-problems', authorize(['admin', 'user', 'superadmin']), async (req, res) => {
   try {
     const { numero } = req.query;
@@ -589,28 +589,28 @@ app.get('/tickets-problems', authorize(['admin', 'user', 'superadmin']), async (
 });
 
     // PUT /tickets-problems/:numero - Actualizar un ticket de problema por NUMERO_TICKET
-    app.put('/tickets-problems/:numero', authorize(['admin', 'superadmin']), async (req, res) => {
-      try {
-        const { numero_ticket, tipo_ticket, estado_ticket_cs, fecha_creacion } = req.body;
-        const [updated] = await TicketsProblem.update(
-          {
-            tipo_ticket,
-            estado_ticket_cs,
-            fecha_creacion,
-          },
-          { where: { NUMERO_TICKET: req.params.numero } }
-        );
-        if (updated) {
-          const updatedTicket = await TicketsProblem.findByPk(req.params.numero);
-          res.json(updatedTicket);
-        } else {
-          res.status(404).json({ error: 'Ticket de problema no encontrado' });
-        }
-      } catch (error) {
-        console.error('❌ Error actualizando ticket-problem:', error);
-        res.status(500).json({ error: 'Error actualizando ticket de problema' });
-      }
-    });
+app.put('/tickets-problems/:numero', authorize(['admin', 'superadmin']), async (req, res) => {
+  try {
+    const { numero_ticket, tipo_ticket, estado_ticket_cs, fecha_creacion } = req.body;
+    const [updated] = await TicketsProblem.update(
+      {
+        tipo_ticket,
+        estado_ticket_cs,
+        fecha_creacion,
+      },
+      { where: { numero_ticket: req.params.numero } }  // Cambia NUMERO_TICKET a numero_ticket (minúsculas)
+    );
+    if (updated) {
+      const updatedTicket = await TicketsProblem.findByPk(req.params.numero);
+      res.json(updatedTicket);
+    } else {
+      res.status(404).json({ error: 'Ticket de problema no encontrado' });
+    }
+  } catch (error) {
+    console.error('❌ Error actualizando ticket-problem:', error);
+    res.status(500).json({ error: 'Error actualizando ticket de problema' });
+  }
+});
 
     // ======================
     // ENDPOINTS DE TIENDAS
@@ -675,21 +675,16 @@ app.get('/tickets-problems', authorize(['admin', 'user', 'superadmin']), async (
     // ENDPOINT PARA COLUMNAS
     // ======================
     app.get('/columns', authorize(['admin', 'user', 'superadmin']), async (req, res) => {
-      try {
-        const [result] = await sequelize.query(`
-      SELECT column_name 
-      FROM information_schema.columns 
-      WHERE table_name = 'tickets'
-      ORDER BY ordinal_position;
-    `);
-
-        const columnas = result.map(r => r.column_name);
-        res.json({ success: true, columns: columnas });
-      } catch (err) {
-        console.error('❌ Error obteniendo columnas:', err);
-        res.status(500).json({ success: false, error: 'Error obteniendo columnas' });
-      }
-    });
+  try {
+    const Ticket = await getTicketModel();
+    const columnas = Object.keys(Ticket.rawAttributes);
+    
+    res.json({ success: true, columns: columnas });
+  } catch (err) {
+    console.error('❌ Error obteniendo columnas:', err);
+    res.status(500).json({ success: false, error: 'Error obteniendo columnas' });
+  }
+});
 
     // ======================
     // ENDPOINT PARA PLAN DE ACCIÓN + REUNIONES
@@ -787,7 +782,7 @@ app.post("/plan-accion", authorize(['admin', 'superadmin']), async (req, res) =>
     // 🧠 Crear plan con todos los campos que existan en el body
     const nuevoPlan = await PlanAccion.create({
       ...planData,
-      tipo_ticket, // Asegúrate de guardar el tipo_ticket
+      tipo_ticket: 'incidente', // Asegúrar de guardar el tipo_ticket
       personal: Array.isArray(planData.personal) ? planData.personal : (planData.encargado ? [planData.encargado] : []), 
     }, { transaction: t });
 
@@ -843,7 +838,6 @@ app.post("/plan-accion", authorize(['admin', 'superadmin']), async (req, res) =>
 // ENDPOINTS DE PERSONAL
 // ======================
 
-// GET /personal/stats - Obtener estadísticas de personal (para VisualizarPersonal)
 app.get('/personal/stats', authorize(['admin', 'user', 'superadmin']), async (req, res) => {
   try {
     console.log('🔍 Obteniendo estadísticas de personal...');
@@ -872,6 +866,9 @@ app.get('/personal/stats', authorize(['admin', 'user', 'superadmin']), async (re
     res.status(500).json({ error: 'Error obteniendo estadísticas de personal' });
   }
 });
+
+
+
 
 // GET /personal - Obtener todos los personales (opcional, si necesitas listar sin stats)
 app.get('/personal', authorize(['admin', 'user', 'superadmin']), async (req, res) => {
