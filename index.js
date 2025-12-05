@@ -1,4 +1,3 @@
-
 require('dotenv').config();
 const authRoutes = require("./src/routes/auth.routes.js");
 const userRoutes = require("./src/routes/user.routes.js");
@@ -692,6 +691,7 @@ app.put('/tickets-problems/:numero', authorize(['admin', 'superadmin']), async (
 
 app.get("/plan-accion", authorize(['admin', 'user', 'superadmin']), async (req, res) => {
   try {
+    // 1. Tickets normales con planes
     const tickets = await Ticket.findAll({
       include: [
         {
@@ -703,9 +703,9 @@ app.get("/plan-accion", authorize(['admin', 'user', 'superadmin']), async (req, 
               as: "reuniones",
               include: [
                 {
-                   model: Personal,
-                   as: "personal",
-                   through: { attributes: ['asistio'] },
+                  model: Personal,
+                  as: "personal",
+                  through: { attributes: ['asistio'] },
                 },
               ],
             },
@@ -714,17 +714,87 @@ app.get("/plan-accion", authorize(['admin', 'user', 'superadmin']), async (req, 
       ],
     });
 
-    console.log("Tickets obtenidos:", tickets.map(t => ({ numero_ticket: t.numero_ticket, planes: t.planes.map(p => ({ id_plan_accion: p.id_plan_accion, encargados: p.encargados })) })));
+    // 2. Tickets problems con planes
+    const ticketsProblems = await TicketsProblem.findAll();
+    const problemTicketNumbers = ticketsProblems.map(t => t.numero_ticket);
 
-    
-    const data = tickets.map(ticket => {
-      // Luego retornas el objeto con los campos que te interesan
-      return {
-        "NUMERO DE TICKET": ticket.numero_ticket,
-        "ESTADO DEL TICKET CS": ticket.estado_ticket_cs,
-        "ESTADO DEL PLAN DE ACCION": ticket.estado_plan_accion || "Pendiente",
-        "GRUPO RESOLUTOR": ticket.grupo_resolutor, 
-        planes: ticket.planes.map(plan => ({
+    const planesProblems = await PlanAccion.findAll({
+      where: {
+        numero_ticket: problemTicketNumbers,
+        tipo_ticket: 'problem'
+      },
+      include: [
+        {
+          model: Reunion,
+          as: "reuniones",
+          include: [
+            {
+              model: Personal,
+              as: "personal",
+              through: { attributes: ['asistio'] },
+            },
+          ],
+        },
+      ],
+    });
+
+    // 3. Formatear tickets normales
+    const dataNormales = tickets.map(ticket => ({
+      "NUMERO DE TICKET": ticket.numero_ticket,
+      "TIPO DE TICKET": ticket.tipo_ticket || "incidente",
+      "ESTADO DEL TICKET CS": ticket.estado_ticket_cs,
+      "ESTADO DEL PLAN DE ACCION": ticket.estado_plan_accion || "Pendiente",
+      "GRUPO RESOLUTOR": ticket.grupo_resolutor,
+      planes: ticket.planes.map(plan => ({
+        id_plan_accion: plan.id_plan_accion,
+        numero_ticket: plan.numero_ticket,
+        tipo_ticket: plan.tipo_ticket,
+        estado_plan_accion: plan.estado_plan_accion,
+        plan_accion: plan.plan_accion,
+        novedad: plan.novedad,
+        servicio: plan.servicio,
+        fecha_apertura: plan.fecha_apertura,
+        fecha_cierre: plan.fecha_cierre,
+        personal: Array.isArray(plan.personal) ? plan.personal : (plan.encargado ? [plan.encargado] : []),
+        porcentaje_plan: plan.porcentaje_plan,
+        avance_plan_accion: plan.avance_plan_accion,
+        num_dias_plan: plan.num_dias_plan || 0,
+        efectividad: plan.efectividad,
+        reuniones: plan.reuniones.map(reu => ({
+          id_reunion: reu.id_reunion,
+          id_plan_accion: reu.id_plan_accion,
+          titulo: reu.titulo,
+          proposito: reu.proposito,
+          conclusiones: reu.conclusiones,
+          fecha_reunion: reu.fecha_reunion,
+          personal: reu.personal.map(as => ({
+            id_personal: as.id_personal,
+            nombre: as.nombre || 'sin nombre',
+            correo: as.correo || 'sin correo',
+            asistio: as.ReunionesAsistentes ? as.ReunionesAsistentes.asistio : false,
+          })),
+        })),
+      })),
+    }));
+
+    // 4. Formatear tickets problems (aunque no tengan planes)
+    const ticketsProblemsMap = new Map();
+    for (const ticketProblem of ticketsProblems) {
+      ticketsProblemsMap.set(ticketProblem.numero_ticket, {
+        "NUMERO DE TICKET": ticketProblem.numero_ticket,
+        "TIPO DE TICKET": "problem",
+        "ESTADO DEL TICKET CS": ticketProblem.estado_ticket_cs || "N/A",
+        "ESTADO DEL PLAN DE ACCION": "Pendiente",
+        "GRUPO RESOLUTOR": "N/A",
+        planes: []
+      });
+    }
+    for (const plan of planesProblems) {
+      const ticketNumber = plan.numero_ticket;
+      if (ticketsProblemsMap.has(ticketNumber)) {
+        const ticket = ticketsProblemsMap.get(ticketNumber);
+        ticket["ESTADO DEL PLAN DE ACCION"] = plan.estado_plan_accion || "Pendiente";
+        ticket.planes.push({
           id_plan_accion: plan.id_plan_accion,
           numero_ticket: plan.numero_ticket,
           tipo_ticket: plan.tipo_ticket,
@@ -734,10 +804,10 @@ app.get("/plan-accion", authorize(['admin', 'user', 'superadmin']), async (req, 
           servicio: plan.servicio,
           fecha_apertura: plan.fecha_apertura,
           fecha_cierre: plan.fecha_cierre,
-          personal: Array.isArray(plan.personal) ? plan.personal : (plan.encargado ? [plan.encargado] : []),
+          personal: Array.isArray(plan.personal) ? plan.personal : [],
           porcentaje_plan: plan.porcentaje_plan,
           avance_plan_accion: plan.avance_plan_accion,
-          num_dias_plan: plan.num_dias_plan || 0,  // Nueva
+          num_dias_plan: plan.num_dias_plan || 0,
           efectividad: plan.efectividad,
           reuniones: plan.reuniones.map(reu => ({
             id_reunion: reu.id_reunion,
@@ -750,21 +820,25 @@ app.get("/plan-accion", authorize(['admin', 'user', 'superadmin']), async (req, 
               id_personal: as.id_personal,
               nombre: as.nombre || 'sin nombre',
               correo: as.correo || 'sin correo',
-            asistio: as.ReunionesAsistentes ? as.ReunionesAsistentes.asistio : false,
+              asistio: as.ReunionesAsistentes ? as.ReunionesAsistentes.asistio : false,
             })),
           })),
-        })),
-      };
-    });
+        });
+      }
+    }
 
-    res.json(data);
+    // 5. Unir y enviar
+    const dataProblems = Array.from(ticketsProblemsMap.values());
+    const dataFinal = [...dataNormales, ...dataProblems];
+
+    res.json(dataFinal);
   } catch (error) {
     console.error("❌ Error al obtener los planes de acción:", error);
     res.status(500).json({ message: "Error al obtener los planes de acción" });
   }
-
-  console.log("Datos recibidos:", req.body);
 });
+
+
 // ======================
 // CREAR PLAN DE ACCIÓN + REUNIONES + ASISTENTES
 // ======================

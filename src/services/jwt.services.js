@@ -12,6 +12,7 @@ function generateToken(payload) {
       break;
     case "superadmin":
       expiresIn = "5h"; 
+    break;
     default:
       expiresIn = "5m"; // Valor por defecto
       break;
