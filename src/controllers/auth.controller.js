@@ -60,8 +60,12 @@ const authLogin = async (req, res) => {
       user.email = ldapEmail;
       updated = true;
     }
+ // 🔧 Calcular hora actual en Colombia (UTC-5)
+    const nowUTC = new Date();
+    const colombiaOffset = -5 * 60 * 60 * 1000; // -5 horas en milisegundos
+    const now = new Date(nowUTC.getTime() + colombiaOffset);
  
-    user.last_login = new Date();  // Guarda la fecha/hora actual
+    user.last_login = now;  // Guarda la fecha/hora actual
     updated = true;
  
     if (updated) {
@@ -108,5 +112,6 @@ const authLogin = async (req, res) => {
 };
  
 module.exports = { authLogin };
+ 
  
  
