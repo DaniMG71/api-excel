@@ -64,7 +64,7 @@ const authLogin = async (req, res) => {
     const nowUTC = new Date();
     const colombiaOffset = -5 * 60 * 60 * 1000; // -5 horas en milisegundos
     const now = new Date(nowUTC.getTime() + colombiaOffset);
- 
+
     user.last_login = now;  // Guarda la fecha/hora actual
     updated = true;
  
@@ -112,6 +112,5 @@ const authLogin = async (req, res) => {
 };
  
 module.exports = { authLogin };
- 
  
  
