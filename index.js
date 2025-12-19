@@ -3,6 +3,8 @@ const authRoutes = require("./src/routes/auth.routes.js");
 const userRoutes = require("./src/routes/user.routes.js");
 const express = require('express');
 const cors = require('cors');
+const multer = require("multer");
+const { spawn } = require("child_process");
 const sequelize = require("./src/config/database.js");
 const getUserModel = require('./src/models/DynamicUsers');
 const getTicketModel = require('./src/models/DynamicTicket');
@@ -16,12 +18,160 @@ const TicketTienda = require('./src/models/TicketTienda');
 const authorize = require('./src/middlewares/authorize');
 const Sequelize = require('sequelize');
 
-
-const ldap = require('ldapjs');
-
 const app = express();
-app.use(express.json());
 app.use(cors());
+// Cargar modelos dinámicos al inicio
+   let Tienda;
+
+getTiendaModel().then((model) => {
+  Tienda = model;
+});
+
+
+// ⚠️ IMPORTANTE: Configurar multer ANTES de express.json()
+const upload = multer({ storage: multer.memoryStorage() });
+// =======================
+// PROCESAR CSV DIRECTAMENTE EN NODE.JS
+// =======================
+app.post("/etl",authorize(['superadmin']),  upload.single("file"),  async (req, res) => {
+  try {
+    console.log("📥 Solicitud ETL recibida");
+    
+    if (!req.file) {
+      console.error("❌ Archivo no recibido");
+      return res.status(400).json({ message: "Archivo no recibido" });
+    }
+
+    console.log(`📄 Archivo: ${req.file.originalname} (${req.file.size} bytes)`);
+
+    // Convertir buffer a string
+    const csvContent = req.file.buffer.toString('utf-8');
+    
+    // Parsear CSV manualmente (simple y sin dependencias)
+    const lines = csvContent.split('\n').filter(line => line.trim());
+    
+    if (lines.length === 0) {
+      return res.status(400).json({ message: "El archivo CSV está vacío" });
+    }
+
+    // Obtener headers (primera línea)
+    const headers = lines[0].split(',').map(h => h.trim());
+    console.log(`📊 Columnas encontradas: ${headers.join(', ')}`);
+
+    // Parsear datos (resto de líneas)
+    const records = [];
+    for (let i = 1; i < lines.length; i++) {
+      const values = lines[i].split(',').map(v => v.trim());
+      
+      // Crear objeto con headers como keys
+      const record = {};
+      headers.forEach((header, index) => {
+        record[header] = values[index] || null;
+      });
+      
+      records.push(record);
+    }
+
+    console.log(`✅ ${records.length} registros procesados`);
+
+    // Insertar en base de datos (con transaction para rollback si falla)
+    const t = await sequelize.transaction();
+    
+    try {
+      let insertados = 0;
+      let actualizados = 0;
+      let errores = [];
+
+      for (const record of records) {
+        try {
+          // Mapear campos del CSV a campos de la base de datos
+          const tiendaData = {
+            cod_sap: record.COD_SAP,
+            nombre_pto_operacional: record.NOMBRE_PTO_OPERACIONAL,
+            uunn: record.UUNN,
+            bandera: record.BANDERA,
+            region: record.REGION,
+            direccion: record.DIRECCION,
+            ciudad: record.CIUDAD,
+            gerente: record.GERENTE,
+            cel_director: record.CEL_DIRECTOR,
+            asistente: record.ASISTENTE,
+            cel_asistente: record.CEL_ASISTENTE,
+            regional_negocio: record.REGIONAL_NEGOCIO,
+            cel_regional_neg: record.CEL_REGIONAL_NEG,
+            jefe_seccion_cajas: record.JEFE_SECCION_CAJAS,
+            cel_seccion_cajas: record.CEL_SECCION_CAJAS,
+            field_support: record.FIELD_SUPPORT,
+            tienda_remota: record.TIENDA_REMOTA,
+            field_support_supervisor: record.FIELD_SUPPORT_SUPERVISOR,
+            cel_field_support_supervisor: record.CEL_FIELD_SUPPORT_SUPERVISOR,
+            latitud: record.LATITUD,
+            longitud: record.LONGITUD,
+            hora_de_inicio: record.HORA_DE_INICIO,
+            hora_de_fin: record.HORA_DE_FIN,
+          };
+
+          // Validar que cod_sap existe
+          if (!tiendaData.cod_sap) {
+            errores.push(`Fila sin COD_SAP: ${JSON.stringify(record)}`);
+            continue;
+          }
+
+          // Usar upsert (actualiza si existe, crea si no)
+          const [tienda, created] = await Tienda.upsert(tiendaData, {
+            transaction: t,
+            returning: true
+          });
+
+          if (created) {
+            insertados++;
+          } else {
+            actualizados++;
+          }
+
+        } catch (rowError) {
+          console.error(`❌ Error en registro ${record.COD_SAP}:`, rowError.message);
+          errores.push(`COD_SAP ${record.COD_SAP}: ${rowError.message}`);
+        }
+      }
+
+      // Commit si todo salió bien
+      await t.commit();
+
+      console.log(`✅ Proceso completado: ${insertados} insertados, ${actualizados} actualizados`);
+      
+      res.json({
+        success: true,
+        message: "CSV procesado correctamente",
+        data: {
+          total: records.length,
+          insertados,
+          actualizados,
+          errores: errores.length,
+          detalleErrores: errores.slice(0, 10) // Primeros 10 errores
+        }
+      });
+
+    } catch (dbError) {
+      // Rollback si hay error
+      await t.rollback();
+      console.error("❌ Error en base de datos:", dbError);
+      res.status(500).json({ 
+        message: "Error guardando en base de datos",
+        error: dbError.message 
+      });
+    }
+
+  } catch (err) {
+    console.error("❌ Error en endpoint ETL:", err);
+    res.status(500).json({ 
+      message: "Error procesando CSV",
+      error: err.message 
+    });
+  }
+});
+app.use(express.json());
+
 
 app.use("/auth", authRoutes)
 app.use("/users", userRoutes)
@@ -273,7 +423,6 @@ app.get('/tickets', authorize(['admin', 'user', 'superadmin']), async (req, res)
       // 2. Obtener cod_saps únicos
       const codSaps = [...new Set(relaciones.map(r => r.cod_sap))];  // Evita duplicados
       
-      console.log(`   - Ticket ${ticket.numero_ticket}: ${codSaps.length} tiendas asociadas (${codSaps.join(', ')})`);
       
       // 3. Obtener detalles de cada tienda
       const tiendasAsociadas = await Promise.all(
@@ -291,7 +440,6 @@ app.get('/tickets', authorize(['admin', 'user', 'superadmin']), async (req, res)
       };
     }));
 
-    console.log(`✅ Enviando ${ticketsConTiendas.length} tickets con tiendas asociadas`);
     res.json(ticketsConTiendas);
   } catch (error) {
     console.error('❌ Error obteniendo tickets con tiendas:', error);
@@ -338,7 +486,6 @@ app.get('/tickets', authorize(['admin', 'user', 'superadmin']), async (req, res)
       throw new Error('Debe seleccionar al menos una tienda');
     }
     
-    console.log(`   - Tiendas seleccionadas: ${codigosTiendas.join(', ')} (${codigosTiendas.length} total)`);
     
     // 1️⃣ OBTENER DETALLES DE LAS TIENDAS
     const tiendas = await Promise.all(
@@ -359,7 +506,6 @@ app.get('/tickets', authorize(['admin', 'user', 'superadmin']), async (req, res)
     data.bandera = primeraTienda.bandera;
     data.region = primeraTienda.region;
     
-    console.log(`   - Primaria: ${data.codigo_tienda} (${data.tienda})`);
     
     // 3️⃣ CREAR EL TICKET PRINCIPAL (sin codigo_tienda en el create, ya que lo agregamos arriba)
     const nuevoTicket = await Ticket.create(data, { transaction: t });
@@ -371,7 +517,6 @@ app.get('/tickets', authorize(['admin', 'user', 'superadmin']), async (req, res)
         cod_sap: tienda.cod_sap
       }, { transaction: t });
       
-      console.log(`   - Relación creada: Ticket ${nuevoTicket.numero_ticket} ↔ Tienda ${tienda.cod_sap}`);
     }
     
     // 5️⃣ Opcional: Limpiar el array del body para no guardarlo en el ticket
@@ -385,7 +530,6 @@ app.get('/tickets', authorize(['admin', 'user', 'superadmin']), async (req, res)
       include: []  // Si tienes asociaciones, agrégalas aquí
     });
     
-    console.log(`✅ Ticket ${nuevoTicket.numero_ticket} creado con ${tiendasValidas.length} tiendas`);
     res.status(201).json(ticketCompleto);
     
   } catch (error) {
@@ -1558,6 +1702,9 @@ app.post("/plan-accion-problem", authorize(['admin', 'superadmin']), async (req,
       message: "✅ Plan de acción creado con éxito para ticket problem",
       plan: nuevoPlan,
     });
+
+
+
     
   } catch (error) {
     await t.rollback();
