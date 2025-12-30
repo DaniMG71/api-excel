@@ -14,6 +14,7 @@ const getMeetingModel = require('./src/models/DynamicMeeting');
 const getPersonalModel = require('./src/models/DynamicPersonal.js');
 const getTicketsProblemModel = require('./src/models/DynamicTicketsProblem');
 const getDynamicReunionesAsistentesModel = require('./src/models/DynamicReunionesAsistentes');
+const getGruposResolutorModel = require('./src/models/DynamicGruposResolutor');
 const TicketTienda = require('./src/models/TicketTienda');
 const authorize = require('./src/middlewares/authorize');
 const Sequelize = require('sequelize');
@@ -291,7 +292,7 @@ async function startServer() {
     console.log('✅ Conectado a PostgreSQL');
 
     // Cargar modelos dinámicos al inicio
-    const [Ticket, Tienda, PlanAccion, Reunion, Personal, ReunionAsistente, TicketsProblem] = await Promise.all([
+    const [Ticket, Tienda, PlanAccion, Reunion, Personal, ReunionAsistente, TicketsProblem, GrupoResolutor] = await Promise.all([
       getTicketModel(),
       getTiendaModel(),
       getActionPlanModel(),
@@ -299,7 +300,7 @@ async function startServer() {
       getPersonalModel(),
       getDynamicReunionesAsistentesModel(),
       getTicketsProblemModel(),
-      
+      getGruposResolutorModel(),
     ]);
     console.log('📦 Modelos cargados correctamente');
 
@@ -329,6 +330,19 @@ Personal.belongsToMany(Reunion, {
   as: "reuniones",
 });
 
+// Relaciones para grupos resolutor
+Personal.belongsToMany(GrupoResolutor, {
+  through: 'personal_grupos',  // Nombre de la tabla intermedia
+  foreignKey: 'id_personal',
+  otherKey: 'id_grupo',
+  as: 'gruposResolutor',
+});
+GrupoResolutor.belongsToMany(Personal, {
+  through: 'personal_grupos',
+  foreignKey: 'id_grupo',
+  otherKey: 'id_personal',
+  as: 'personal',
+});
 
 // Sync tablas (solo para dev - quítalo en prod para evitar alteraciones)
 //sequelize.sync({ alter: true }).then(() => console.log('🔄 Tablas sincronizadas'));
@@ -1057,81 +1071,166 @@ app.post("/plan-accion", authorize(['admin', 'superadmin']), async (req, res) =>
 // ======================
 
 app.get('/personal/stats', authorize(['admin', 'user', 'superadmin']), async (req, res) => {
-  try {
-    console.log('🔍 Obteniendo estadísticas de personal...');
-    
-    // Consulta para obtener personal con conteos agregados
-    const stats = await sequelize.query(`
-  SELECT 
-    p.id_personal AS "personalId",
-    p.nombre,
-    p.correo,
-    COUNT(DISTINCT ra.id_reunion) AS "totalReuniones",
-    COUNT(DISTINCT CASE WHEN pa.estado_plan_accion = 'Pendiente' THEN pa.id_plan_accion END) AS "planesPendientes",
-    COUNT(DISTINCT CASE WHEN pa.estado_plan_accion = 'Completado' THEN pa.id_plan_accion END) AS "planesCompletados"
-  FROM personal p
-  LEFT JOIN reunionesasistentes ra ON p.id_personal = ra.id_personal
-  LEFT JOIN reuniones r ON ra.id_reunion = r.id_reunion
-  LEFT JOIN planaccion pa ON r.id_plan_accion = pa.id_plan_accion  -- ✅ Cambiar "plan_accion" a "planaccion"
-  GROUP BY p.id_personal, p.nombre, p.correo
-  ORDER BY p.nombre;
-`, { type: sequelize.QueryTypes.SELECT });
-    
-    console.log(`✅ Estadísticas obtenidas para ${stats.length} personas`);
-    res.json(stats);
-  } catch (error) {
-    console.error('❌ Error obteniendo estadísticas de personal:', error);
-    res.status(500).json({ error: 'Error obteniendo estadísticas de personal' });
-  }
-});
-
+      try {
+        console.log('🔍 Obteniendo estadísticas de personal con grupos...');
+        
+        // Consulta actualizada para incluir grupos
+        const stats = await sequelize.query(`
+          SELECT 
+            p.id_personal AS "personalId",
+            p.nombre,
+            p.correo,
+            COUNT(DISTINCT ra.id_reunion) AS "totalReuniones",
+            COUNT(DISTINCT CASE WHEN pa.estado_plan_accion = 'Pendiente' THEN pa.id_plan_accion END) AS "planesPendientes",
+            COUNT(DISTINCT CASE WHEN pa.estado_plan_accion = 'Completado' THEN pa.id_plan_accion END) AS "planesCompletados",
+            ARRAY_AGG(DISTINCT gr.nombre) FILTER (WHERE gr.nombre IS NOT NULL) AS "gruposResolutor"  -- NUEVO: Agrega grupos
+          FROM personal p
+          LEFT JOIN reunionesasistentes ra ON p.id_personal = ra.id_personal
+          LEFT JOIN reuniones r ON ra.id_reunion = r.id_reunion
+          LEFT JOIN planaccion pa ON r.id_plan_accion = pa.id_plan_accion
+          LEFT JOIN personal_grupos pg ON p.id_personal = pg.id_personal  -- NUEVO: Une con tabla intermedia
+          LEFT JOIN grupos_resolutor gr ON pg.id_grupo = gr.id_grupo     -- NUEVO: Une con grupos
+          GROUP BY p.id_personal, p.nombre, p.correo
+          ORDER BY p.nombre;
+        `, { type: sequelize.QueryTypes.SELECT });
+        
+        // Formatea grupos como array de objetos (para coincidir con tipos)
+        const formattedStats = stats.map(person => ({
+          ...person,
+          gruposResolutor: person.gruposResolutor ? person.gruposResolutor.filter(g => g).map(nombre => ({ nombre })) : [],  // Convierte a array de objetos
+        }));
+        
+        console.log(`✅ Estadísticas obtenidas para ${formattedStats.length} personas`);
+        res.json(formattedStats);
+      } catch (error) {
+        console.error('❌ Error obteniendo estadísticas de personal:', error);
+        res.status(500).json({ error: 'Error obteniendo estadísticas de personal' });
+      }
+    });
 
 
 
 // GET /personal - Obtener todos los personales (opcional, si necesitas listar sin stats)
 app.get('/personal', authorize(['admin', 'user', 'superadmin']), async (req, res) => {
   try {
-    const personal = await Personal.findAll();
+    console.log('🔍 Obteniendo lista de personal con grupos...');
+    
+    const personal = await Personal.findAll({
+      include: [{ 
+        model: GrupoResolutor, 
+        as: 'gruposResolutor',
+        through: { 
+          attributes: [] // ✅ Esto excluye TODOS los atributos de personal_grupos
+        },
+        attributes: ['id_grupo', 'nombre']
+      }],
+      order: [['nombre', 'ASC']]
+    });
+    
+    console.log(`✅ Personal obtenido: ${personal.length} registros`);
     res.json(personal);
   } catch (error) {
     console.error('❌ Error obteniendo personal:', error);
-    res.status(500).json({ error: 'Error obteniendo personal' });
+    res.status(500).json({ error: 'Error obteniendo personal', details: error.message });
   }
 });
 
 // POST /personal - Crear nuevo personal
 app.post('/personal', authorize(['admin', 'superadmin']), async (req, res) => {
-  try {
-    const { nombre, correo } = req.body;
-    if (!nombre || !correo) {
-      return res.status(400).json({ error: 'Nombre y correo son requeridos' });
-    }
-    
-    const nuevoPersonal = await Personal.create({ nombre, correo });
-    console.log(`✅ Personal creado: ${nuevoPersonal.nombre}`);
-    res.status(201).json(nuevoPersonal);
-  } catch (error) {
-    console.error('❌ Error creando personal:', error);
-    res.status(500).json({ error: 'Error creando personal' });
-  }
-});
+      try {
+        const { nombre, correo } = req.body;
+        if (!nombre || !correo) {
+          return res.status(400).json({ error: 'Nombre y correo son requeridos' });
+        }
+        
+        const nuevoPersonal = await Personal.create({ nombre, correo });
+        console.log(`✅ Personal creado: ${nuevoPersonal.nombre}`);
+        res.status(201).json(nuevoPersonal);
+      } catch (error) {
+        console.error('❌ Error creando personal:', error);
+        res.status(500).json({ error: 'Error creando personal' });
+      }
+    });
+
+app.put('/personal/:id', authorize(['admin', 'superadmin']), async (req, res) => {
+      const t = await sequelize.transaction();
+      try {
+        const { id } = req.params;
+        const { nombre, correo, gruposResolutor } = req.body;  // gruposResolutor es array de nombres
+        
+        const persona = await Personal.findByPk(id, { transaction: t });
+        if (!persona) {
+          await t.rollback();
+          return res.status(404).json({ error: 'Personal no encontrado' });
+        }
+        
+        // Actualiza campos básicos
+        await persona.update({ nombre, correo }, { transaction: t });
+        
+        // Sincroniza grupos si se proporcionan
+        if (Array.isArray(gruposResolutor)) {
+          // Obtén IDs de grupos por nombres
+          const grupos = await GrupoResolutor.findAll({
+            where: { nombre: gruposResolutor },
+            transaction: t,
+          });
+          await persona.setGruposResolutor(grupos, { transaction: t });  // Reemplaza asociaciones
+        }
+        
+        await t.commit();
+        const personaActualizada = await Personal.findByPk(id, {
+          include: [{ model: GrupoResolutor, as: 'gruposResolutor' }],
+        });
+        res.json(personaActualizada);
+      } catch (error) {
+        await t.rollback();
+        console.error('❌ Error actualizando personal:', error);
+        res.status(500).json({ error: 'Error actualizando personal' });
+      }
+    });
 
 // DELETE /personal/:id - Eliminar personal por ID
-app.delete('/personal/:id', authorize(['admin', 'superadmin']), async (req, res) => {
-  try {
-    const { id } = req.params;
-    const deleted = await Personal.destroy({ where: { id_personal: id } });
-    if (!deleted) {
-      return res.status(404).json({ error: 'Personal no encontrado' });
-    }
-    console.log(`✅ Personal eliminado: ID ${id}`);
-    res.json({ message: 'Personal eliminado correctamente' });
-  } catch (error) {
-    console.error('❌ Error eliminando personal:', error);
-    res.status(500).json({ error: 'Error eliminando personal' });
-  }
-});
+    app.delete('/personal/:id', authorize(['admin', 'superadmin']), async (req, res) => {
+      try {
+        const { id } = req.params;
+        const deleted = await Personal.destroy({ where: { id_personal: id } });
+        if (!deleted) {
+          return res.status(404).json({ error: 'Personal no encontrado' });
+        }
+        console.log(`✅ Personal eliminado: ID ${id}`);
+        res.json({ message: 'Personal eliminado correctamente' });
+      } catch (error) {
+        console.error('❌ Error eliminando personal:', error);
+        res.status(500).json({ error: 'Error eliminando personal' });
+      }
+    });
 
+// NUEVO: ENDPOINTS PARA GRUPOS RESOLUTOR
+    app.get('/grupos', authorize(['admin', 'user', 'superadmin']), async (req, res) => {
+      try {
+        const grupos = await GrupoResolutor.findAll();
+        res.json(grupos);
+      } catch (error) {
+        console.error('❌ Error obteniendo grupos:', error);
+        res.status(500).json({ error: 'Error obteniendo grupos' });
+      }
+    });
+
+    app.post('/grupos', authorize(['admin', 'superadmin']), async (req, res) => {
+      try {
+        const { nombre } = req.body;
+        if (!nombre) {
+          return res.status(400).json({ error: 'Nombre del grupo es requerido' });
+        }
+        
+        const nuevoGrupo = await GrupoResolutor.create({ nombre });
+        console.log(`✅ Grupo creado: ${nuevoGrupo.nombre}`);
+        res.status(201).json(nuevoGrupo);
+      } catch (error) {
+        console.error('❌ Error creando grupo:', error);
+        res.status(500).json({ error: 'Error creando grupo' });
+      }
+    });
 
 // ======================
 // EDITAR PLAN DE ACCIÓN (Flexible)
@@ -1375,6 +1474,7 @@ app.patch("/plan-accion/:planId/reunion/:reunionId", authorize(['admin', 'supera
 // ======================
 
 // GET /reuniones/ticket/:ticketNumber - Obtener reuniones de un ticket específico
+// GET /reuniones/ticket/:ticketNumber - Obtener reuniones de un ticket específico
 app.get('/reuniones/ticket/:ticketNumber', authorize(['admin', 'user', 'superadmin']), async (req, res) => {
   try {
     const { ticketNumber } = req.params;
@@ -1384,7 +1484,8 @@ app.get('/reuniones/ticket/:ticketNumber', authorize(['admin', 'user', 'superadm
         {
           model: Personal,
           as: 'personal',
-          through: { attributes: ['asistio'] },  // Incluye el campo 'asistio' de la tabla intermedia
+          attributes: ['id_personal', 'nombre', 'correo'], // ✅ Especifica atributos del modelo Personal
+          through: { attributes: ['asistio'] }, // ✅ Incluye asistio de la tabla intermedia
         },
       ],
     });
