@@ -263,8 +263,3 @@ Referencias de código relevantes
 Conclusión
 -------------------------
 El archivo `index.js` actúa como el eje de arranque de la aplicación: configura middlewares, maneja carga de archivos, monta routers y contiene rutas críticas (como `/etl`) que integran el parseo de archivos y la persistencia en la base de datos mediante Sequelize. El diseño combina modelos dinámicos (introspección en tiempo de ejecución) con controles de autenticación basados en LDAP y sesiones con JWT, garantizando flexibilidad frente a cambios en el esquema de base de datos y control de acceso por roles.
-
-Si necesita, puedo:
-- Generar ejemplos de payloads y respuestas JSON más detalladas según las columnas reales de sus tablas,
-- Proponer mejoras de seguridad (por ejemplo rate limiting, validación avanzada de CSV),
-- Generar un ejemplo de archivo .env con valores de muestra.
